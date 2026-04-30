@@ -1,0 +1,73 @@
+Clobber 'mass'  rename 'smass'
+Clobber 'alt'	rename 'ralt'
+Clobber 'config'	rename 'MEM_CONFIG'
+
+Test 1.1
+Update v1.1
+Undefined Variable MEM_MEM_CONFIG - renamed MEM_CONFIG.
+
+1.2 - Test 1.	Press [1] get P63 Braking Guidance, Computer Display, RCS fires, and Landing legs retract. 
+If we are LANDED, landing legs should stay extended and not retract.   I see no "ALTITUDE TOO LOW FOR PDI" error.
+At the Display, pressing [A], [S], or [M] has no effect.  I have to CTL-C to cancel script.
+Test 2.  Press [2] Stage command is set, however this engage the decent stage.  Maybe detect if the decent stage has been staged first?
+
+renamed script mem.ks for easier starting.
+
+Update v1.2
+Phase 1.  1.1 PASSED
+		  1.2 Pressed [1] Worked - Passed, Pressed [2] Worked - Passed.
+Phase 2.  Cannot run at 20km Kerbin Orbit as it is in atmosphere.  Changed to 80km Kerbin Orbit.
+		  2.1 Lots of Display flicker.  Would it not be easier just to update the values not the entire display?
+		  Manual worked, Not sure if Abort to Orbit worked as Ap was 80km and Pe 50 km.  Abort to Stage just ended the program.
+		  2.2  Not tested.
+Phase 3.  3.1 Needs to activate decent engine. (Assumes engine is active.) Decends okay until highgate and then flips end over end.  Selected [A]bort sent me to a AP of 22, however the direction.  Should send me into the same orbit I was in. (Direction, etc..)  
+			Press S (forgot to open fuel for Accent stage on first attempt).  Second attempt, does stage, but there seems to be no control.  I just continues to burn retrograde.
+		  3.2 Unable to complete due to 3.1 failures.
+
+Update v1.3
+Phase 3.  	1. Durning P63, pressing manual does nothing other than flip the mode from AUTO to MANUAL.  Unable to control throttle.
+			2. At High Gate, Passed, Slows to zero velocity, thrust to 100% and then flips end over end.  If I hit abort the MEM other than flipping or turning to prograde needs to make sure that the turn points us UP and away to safety.  Turning only to Prograde could be disasterious as prograde could be facing the ground.  We need to pitch up above the horizon, burn in the same direction we are traveling.  Most likely retrograde around the Mun.
+			
+Update v1.4	
+Phase 3.	1. P63 - Works well.  P64 - We rotate 90 degrees.  In attempt to fix this I changed the SHIP:UP to just UP (e.g. LOCK STEERING TO UP ) with the same results.  When this happens what was our forward velocity is now side velocity. Attempts to rotate manually with RCS do not work. 	P66 we get down to about 30 meters and then vertical velocity increases and we continue to increase velocity until fuel exhaustion in decent stage.  Did not test Abort/State/Manual.	
+
+Update v1.5
+Phase 3.	1. P63 - PASS,  P64 - Still rotate 90 degrees.  Tried other suggested code.  That worked, MEM did not rotate with LOCK STEERING TO LOOKDIRUP(SHIP:UP:VECTOR, initial_facing).  P66 - ship turn 90 degees, changed to same fix for P64.  Ship just hovers, never comes down, eventually begins to climb.  Took manual control (Figure out that I have to click outside of the terminal display after switch to manual to have any control.)  Was able to FINALLY land with out exploding. 
+			1-1.  Reran test. P63, P64 - Pass!  P66 - The steering works for P66 as well.  Still do not land, just hover unless I take manual control.  I would also like the ability to pitch, yaw so I can cancel out any horzonal velocity.  Full RCS control would be good as well when P66 come on line.  That way I can cancel any horzonal velocity, or move to a safer location. 
+			
+			
+			MASS 7.536 T END 5.236 T TWR 4.89 MAXTWR 7.04 SLT 4.89 VACDELTAV 1232 TIME 2m 9.7 SHIP
+			
+			FUEL LF 251.8  OX 307.8
+			
+			DECENT STAGE:  LF 175.9 OX 215.1 - FUEL CELL LF 6.6(1.1)  OX 8.4 (1.4) = LF 169.3  OX  206.7
+			ASCENT STAGE:  LF 75.9  OX 92.7
+			
+P64 range?!!
+Turn 90 to the right at about 5200 meters,
+Radar changes at 5200 meters.
+
+115 meter we increase thrust and begin to increase altitude.
+Terminal error line 798  LOCAL base_throttle IS needed_accl /max_accel.  Pushing infinity into the stack. 
+
+Check P63.....  Correct Radar ALT doesn't happen until P64
+
+
+Horzional velocity is not being cancelled.
+We are coming down to fast (Vertical velocity to high)
+Cut off isn't engaging when we hit 3 m.
+
+
+Around 1000 meter we stop decending, Thrust increases and we begin to climb.  We then get that NaN into the stage at this line LOCAL vel_horizontal IS SQRT(vel_surface^2 - vel_vertical^2).  Was down to about 30 m/s descent and about 4 to 5 m/s horizonal.
+
+Do some minor tweaks to get landing down.  See Claude last responses.
+
+After DOI spacecraft just drifts.  We should leave it locked to retrograde.
+
+Burn starts AFTER we pass the target.   No way we are going to hit it after we have passed it.
+
+PDI timer is not working correctly.  Counting UP instead of DOWN.
+
+Vector arrows were way above spacecraft.  Changed LOCAL start_pos IS SHIP:POSITION +(SHIP:UP:VECTOR * 100).  To LOCAL start_pos IS SHIP:POSITION.
+Initally craft pitches down, then recovers.  It isn't to sever but shouldn't happen.  As the VECTORS are not fixed, I can clearly see what is happening.  We are not thrusting in the right direction.  We are thrusting to the right of the surface velocity when we should be thrusting to the left of the surface velocity to bring it in line with the target.  I think because of this we flip as the P63_STEERING function can not correct.
+In summary, UPDATE_DEBUG_VECTORS works, no changes needed.  P63_STEERING is still off, initially with the pitch down, and then the angel we correct our surface vector to match the target.

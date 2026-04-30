@@ -1,0 +1,36 @@
+Testing modules for launch preparation...
+Testing AM.MLP.TitanIILaunchStand ModuleGenerator [0]
+Available actions: toggle generator, activate generator, shutdown generator
+Shutdown generator
+Moving to next module...
+Testing AM.MLP.TitanIILaunchStand ModuleGenerator [1]
+Available actions: toggle generator, activate generator, shutdown generator
+Activated generator
+Shutdown generator
+Moving to next module...
+Testing AM.MLP.LaunchStandCrewElevatorGemini ModuleAnimateGenericExtra [0]
+Available actions: toggle elevator car
+Available events: elevator car down
+Toggled elevator car
+Toggled elevator car
+Moving to next module...
+Testing AM.MLP.LaunchStandCrewElevatorGemini ModuleAnimateGenericExtra [1]
+Available actions: toggle elevator car
+Available events: 
+Toggled elevator car
+Toggled elevator car
+Toggled elevator car
+Moving to next module...
+Testing AM.MLP.LaunchStandCrewElevatorGemini ModuleAnimateGenericExtra [2]
+Available actions: toggle elevator car
+Available events: elevator car up
+Toggled elevator car
+Toggled elevator car
+Moving to next module...
+Testing AM.MLP.LaunchStandCrewElevatorGemini ModuleAnimateGenericExtra [3]
+Available actions: toggle elevator car
+Available events: elevator car up
+Toggled elevator car
+Toggled elevator car
+Moving to next module...
+Testing complete.

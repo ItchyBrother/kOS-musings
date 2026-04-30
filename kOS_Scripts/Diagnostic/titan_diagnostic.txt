@@ -1,0 +1,128 @@
+Diagnosing modules for AM.MLP.TitanIILaunchStand and related parts...
+Testing AM.MLP.TitanIILaunchStand Module [0]: LaunchClamp
+Available actions: release clamp
+Available events: release clamp
+Resources - EC: 1521.41 LF: 666 OX: 814 Mono: 92.5
+Moving to next module...
+Testing AM.MLP.TitanIILaunchStand Module [1]: ModuleB9PartSwitch
+Available actions: None
+Available events: None
+Resources - EC: 1521.36 LF: 666 OX: 814 Mono: 92.5
+Moving to next module...
+Testing AM.MLP.TitanIILaunchStand Module [2]: ModuleB9PartSwitch
+Available actions: None
+Available events: None
+Resources - EC: 1521.34 LF: 666 OX: 814 Mono: 92.5
+Moving to next module...
+Testing AM.MLP.TitanIILaunchStand Module [3]: ModuleB9PartSwitch
+Available actions: None
+Available events: None
+Resources - EC: 1521.32 LF: 666 OX: 814 Mono: 92.5
+Moving to next module...
+Testing AM.MLP.TitanIILaunchStand Module [4]: ModuleB9PartSwitch
+Available actions: None
+Available events: None
+Resources - EC: 1521.32 LF: 666 OX: 814 Mono: 92.5
+Moving to next module...
+Testing AM.MLP.TitanIILaunchStand Module [5]: ModuleCommand
+Available actions: control from here, toggle hibernation
+Available events: control from here, rename vessel
+Resources - EC: 1521.31 LF: 666 OX: 814 Mono: 92.5
+Moving to next module...
+Testing AM.MLP.TitanIILaunchStand Module [6]: ModuleDataTransmitter
+Available actions: transmit data
+Available events: None
+Resources - EC: 1521.3 LF: 666 OX: 814 Mono: 92.5
+Moving to next module...
+Testing AM.MLP.TitanIILaunchStand Module [7]: FMRS_PM
+Available actions: None
+Available events: None
+Resources - EC: 1521.29 LF: 666 OX: 814 Mono: 92.5
+Moving to next module...
+Testing AM.MLP.TitanIILaunchStand Module [8]: KCPartModule
+Available actions: create colony
+Available events: build colony
+Resources - EC: 1521.29 LF: 666 OX: 814 Mono: 92.5
+Moving to next module...
+Testing AM.MLP.TitanIILaunchStand Module [9]: MechJebCore
+Available actions: orbit prograde, orbit retrograde, orbit normal, orbit antinormal, orbit radial in, orbit radial out, orbit kill rotation, deactivate smartacs, land somewhere, land at ksc, panic!, translatron off, translatron keep vert, translatron zero speed, translatron +1 speed, translatron -1 speed, translatron toggle h/s, ascent ap toggle
+Available events: None
+Resources - EC: 1521.28 LF: 666 OX: 814 Mono: 92.5
+Moving to next module...
+Testing AM.MLP.TitanIILaunchStand Module [10]: KOSNameTag
+Available actions: None
+Available events: change name tag
+Resources - EC: 1521.27 LF: 666 OX: 814 Mono: 92.5
+Moving to next module...
+Testing AM.MLP.TitanIILaunchStand Module [11]: ModuleResourceConverter
+Available actions: stop fueling, start fueling, toggle fueling
+Available events: start fueling
+Resources - EC: 1521.24 LF: 666 OX: 814 Mono: 92.5
+Moving to next module...
+Testing AM.MLP.TitanIILaunchStand Module [12]: ModuleGenerator
+Available actions: toggle generator, activate generator, shutdown generator
+Available events: activate generator
+Resources - EC: 1521.24 LF: 666 OX: 814 Mono: 92.5
+Moving to next module...
+Testing AM.MLP.TitanIILaunchStand Module [13]: ShipEffectsCollisions
+Available actions: None
+Available events: None
+Resources - EC: 1521.22 LF: 666 OX: 814 Mono: 92.5
+Moving to next module...
+Testing AM.MLP.TitanIILaunchStand Module [14]: TrajectoriesVesselSettings
+Available actions: None
+Available events: None
+Resources - EC: 1521.18 LF: 666 OX: 814 Mono: 92.5
+Moving to next module...
+Testing AM.MLP.TitanIILaunchStand Module [15]: ModuleB9PartInfo
+Available actions: None
+Available events: None
+Resources - EC: 1521.16 LF: 666 OX: 814 Mono: 92.5
+Moving to next module...
+Testing AM.MLP.TitanIILaunchStand Module [16]: TweakScale
+Available actions: None
+Available events: None
+Resources - EC: 1521.14 LF: 666 OX: 814 Mono: 92.5
+Moving to next module...
+Testing LVDrain2 Module [0]: ModuleResourceDrain
+Available actions: drain, stop draining, toggle draining, toggle resource drain mode
+Available events: None
+Resources - EC: 1521.12 LF: 666 OX: 814 Mono: 92.5
+Moving to next module...
+Testing LVDrain1 (ReleaseValve) Module [0]: ModuleResourceDrain
+Available actions: drain, stop draining, toggle draining, toggle resource drain mode
+Available events: None
+Resources - EC: 1521.07 LF: 666 OX: 814 Mono: 92.5
+Moving to next module...
+Testing LVDrain1 (ReleaseValve) Module [0]: ModuleResourceDrain
+Available actions: drain, stop draining, toggle draining, toggle resource drain mode
+Available events: None
+Resources - EC: 1521.04 LF: 666 OX: 814 Mono: 92.5
+Moving to next module...
+Testing AM.MLP.LaunchStandCrewElevatorGemini Module [0]: ModuleAnimateGenericExtra
+Available actions: toggle elevator car
+Available events: elevator car down
+Resources - EC: 1521.02 LF: 666 OX: 814 Mono: 92.5
+Moving to next module...
+Testing AM.MLP.LaunchStandCrewElevatorGemini Module [1]: ModuleAnimateGenericExtra
+Available actions: toggle elevator car
+Available events: elevator car down
+Resources - EC: 1520.97 LF: 666 OX: 814 Mono: 92.5
+Moving to next module...
+Testing AM.MLP.LaunchStandCrewElevatorGemini Module [2]: ModuleAnimateGenericExtra
+Available actions: toggle elevator car
+Available events: elevator car down
+Resources - EC: 1520.68 LF: 666 OX: 814 Mono: 92.5
+Triggered action: toggle elevator car
+Resource change - EC: -0.26 LF: 0 OX: 0 Mono: 0
+Moving to next module...
+Testing AM.MLP.LaunchStandCrewElevatorGemini Module [3]: ModuleAnimateGenericExtra
+Available actions: toggle elevator car
+Available events: None
+Resources - EC: 1519.81 LF: 666 OX: 814 Mono: 92.5
+Triggered action: toggle elevator car
+Resource change - EC: -0.28 LF: 0 OX: 0 Mono: 0
+Triggered action: toggle elevator car
+Resource change - EC: -0.07 LF: 0 OX: 0 Mono: 0
+Moving to next module...
+Diagnostic complete.

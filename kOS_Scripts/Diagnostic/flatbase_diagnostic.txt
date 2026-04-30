@@ -1,0 +1,89 @@
+Diagnosing modules for AM.MLP.FlatLaunchBaseSmall and related parts...
+Testing AM.MLP.FlatLaunchBaseSmall Module [0]: LaunchClamp
+Available actions: release clamp
+Available events: release clamp
+Resources - EC: 265 LF: 7.41 OX: 9.06 Mono: 0
+Moving to next module...
+Testing AM.MLP.FlatLaunchBaseSmall Module [1]: ModuleB9PartSwitch
+Available actions: None
+Available events: None
+Resources - EC: 265 LF: 7.41 OX: 9.06 Mono: 0
+Moving to next module...
+Testing AM.MLP.FlatLaunchBaseSmall Module [2]: ModuleB9PartSwitch
+Available actions: None
+Available events: None
+Resources - EC: 265 LF: 7.41 OX: 9.06 Mono: 0
+Moving to next module...
+Testing AM.MLP.FlatLaunchBaseSmall Module [3]: ModuleB9PartSwitch
+Available actions: None
+Available events: None
+Resources - EC: 265 LF: 7.41 OX: 9.06 Mono: 0
+Moving to next module...
+Testing AM.MLP.FlatLaunchBaseSmall Module [4]: ModuleB9PartSwitch
+Available actions: None
+Available events: None
+Resources - EC: 265 LF: 7.41 OX: 9.06 Mono: 0
+Moving to next module...
+Testing AM.MLP.FlatLaunchBaseSmall Module [5]: ModuleB9PartSwitch
+Available actions: None
+Available events: None
+Resources - EC: 265 LF: 7.41 OX: 9.06 Mono: 0
+Moving to next module...
+Testing AM.MLP.FlatLaunchBaseSmall Module [6]: FMRS_PM
+Available actions: None
+Available events: None
+Resources - EC: 265 LF: 7.41 OX: 9.06 Mono: 0
+Moving to next module...
+Testing AM.MLP.FlatLaunchBaseSmall Module [7]: KOSNameTag
+Available actions: None
+Available events: change name tag
+Resources - EC: 265 LF: 7.41 OX: 9.06 Mono: 0
+Moving to next module...
+Testing AM.MLP.FlatLaunchBaseSmall Module [8]: ModuleResourceConverter
+Available actions: stop fueling, start fueling, toggle fueling
+Available events: start fueling
+Resources - EC: 265 LF: 7.41 OX: 9.06 Mono: 0
+Triggered action: toggle fueling
+Resource change - EC: 0 LF: 36.72 OX: 44.88 Mono: 5.1
+Triggered action: toggle fueling
+Resource change - EC: 0 LF: 29.52 OX: 36.08 Mono: 4.1
+Triggered event: start fueling
+Resource change - EC: 0 LF: 36.72 OX: 44.88 Mono: 0.8
+Triggered action: toggle fueling
+Resource change - EC: 0 LF: 41.76 OX: 51.04 Mono: 0
+Moving to next module...
+Testing AM.MLP.FlatLaunchBaseSmall Module [9]: ShipEffectsCollisions
+Available actions: None
+Available events: None
+Resources - EC: 265 LF: 152.13 OX: 185.94 Mono: 10
+Moving to next module...
+Testing AM.MLP.FlatLaunchBaseSmall Module [10]: ModuleB9PartInfo
+Available actions: None
+Available events: None
+Resources - EC: 265 LF: 152.13 OX: 185.94 Mono: 10
+Moving to next module...
+Testing AM.MLP.FlatLaunchBaseSmall Module [11]: TweakScale
+Available actions: None
+Available events: None
+Resources - EC: 265 LF: 152.13 OX: 185.94 Mono: 10
+Moving to next module...
+Testing CapsuleDrain Module [0]: ModuleResourceDrain
+Available actions: drain, stop draining, toggle draining, toggle resource drain mode
+Available events: None
+Resources - EC: 265 LF: 152.13 OX: 185.94 Mono: 10
+Triggered action: toggle draining
+Resource change - EC: 0 LF: 0 OX: 0 Mono: -1.02
+Triggered action: toggle draining
+Resource change - EC: 0 LF: 0 OX: 0 Mono: -3.26
+Moving to next module...
+Testing LVDrain Module [0]: ModuleResourceDrain
+Available actions: drain, stop draining, toggle draining, toggle resource drain mode
+Available events: None
+Resources - EC: 265 LF: 152.13 OX: 185.94 Mono: 5.72
+Moving to next module...
+Testing AM.MLP.LaunchStandCrewWalkwayMercury Module [0]: ModuleAnimateGenericExtra
+Available actions: toggle walkway
+Available events: raise walkway
+Resources - EC: 265 LF: 152.13 OX: 185.94 Mono: 5.72
+Moving to next module...
+Diagnostic complete.
