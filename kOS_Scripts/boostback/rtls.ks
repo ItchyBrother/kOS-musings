@@ -1,5 +1,5 @@
 // ============================================================
-// rtls.ks  (RTLS bullseye with accuracy-recovered fast landing profile)
+// rtls.ks  (RTLS with accuracy-recovered fast landing profile)
 //
 // Proof-of-geometry RTLS with terminal hoverslam/settle. Entry and AERO
 // still do the heavy precision work; the landing burn should preserve the
@@ -43,7 +43,7 @@ PARAMETER padLngP IS -74.5577.
 // Constants
 // ------------------------------------------------------------
 // Debug logging. Set DEBUG_LOG to FALSE to disable file logging.
-LOCAL DEBUG_LOG          IS TRUE.
+LOCAL DEBUG_LOG          IS FALSE.
 LOCAL LOG_PATH           IS "0:/rtls_log.txt".
 LOCAL LOG_DT             IS 1.5.
 
@@ -82,6 +82,7 @@ LOCAL ENTRY_MIN_TIME     IS 2.
 LOCAL ENTRY_MAX_TIME     IS 20.       // tight runaway guard; typical burn 8-14s
 LOCAL ENTRY_MISS_EXIT    IS 250.      // "centered" fallback exit (rarely needed)
 LOCAL ENTRY_HS_EXIT      IS 35.       // HS braked enough for AERO to handle.
+LOCAL ENTRY_CENTER_PRED_EXIT IS 500.   // do not drop engines just because current miss crosses pad; predicted miss must also be reasonable
                                       // Tighter (e.g. <5) would chase zero-
                                       // velocity-at-pad and oscillate, burning
                                       // fuel and bleeding VS to near-hover.
@@ -100,7 +101,10 @@ LOCAL ENTRY_LEAN_DEG     IS 14.       // reference lean for boostback planning
 // Aero (fin-driven, sign inverted from ENTRY)
 LOCAL AERO_LEAN_DEG      IS 9.
 LOCAL AERO_POS_K         IS 0.020.   // position gain (both axes)
-LOCAL AERO_POS_CAP       IS 12.      // clamp on the position term
+LOCAL AERO_POS_CAP       IS 12.      // clamp on the current-position term
+LOCAL AERO_PRED_K        IS 0.010.   // predicted-touchdown nudge; catches fast pad crossings
+LOCAL AERO_PRED_CAP      IS 24.      // allow prediction to dominate current miss when needed
+LOCAL AERO_PRED_MIN      IS 120.     // below this, avoid prediction twitching and use current miss
 LOCAL IMPACT_CLR         IS 2.
 
 // Landing burn (hoverslam: 3 engines then 1)
@@ -128,6 +132,9 @@ LOCAL LANDING_GEAR_CLR      IS 250.   // deploy gear before the terminal brake g
 LOCAL LANDING_EXIT_CLR      IS 45.    // hand off only after the main brake is controlled, with room to settle
 LOCAL LANDING_EXIT_VS       IS 6.     // do not enter TOUCHDOWN while still carrying a hard vertical rate
 LOCAL LANDING_LEAN_CAP_DEG  IS 25.    // hard cap on lean during landing when far from the pad
+LOCAL LANDING_FAR_LEAN_CAP_DEG IS 16.  // if not captured, avoid a sideways last-ditch pad chase
+LOCAL LANDING_FAR_LOW_LEAN_CAP_DEG IS 8.
+LOCAL LANDING_FAR_TERMINAL_LEAN_CAP_DEG IS 3.
 LOCAL LANDING_FINAL_LEAN_CLR     IS 140. // preserve lateral authority until close to touchdown
 LOCAL LANDING_FINAL_LEAN_CAP_DEG IS 8.   // enough late authority to brake overshoot without a kick
 LOCAL LANDING_CAPTURE_MISS       IS 350. // if AERO already solved miss, landing burn must preserve it
@@ -136,6 +143,9 @@ LOCAL LANDING_CAPTURE_POS_CAP    IS 2.2.   // cap position pull; altitude-adapti
 LOCAL LANDING_CAPTURE_VEL_K      IS 0.90.  // damp closure without cancelling the pad pull too early
 LOCAL LANDING_CAPTURE_VEL_CAP    IS 2.4.
 LOCAL LANDING_CAPTURE_LEAN_CAP_DEG IS 12. // capture mode can use a little more lean while still high
+LOCAL LANDING_CAPTURE_ZEM_VEL_K  IS 4.0. // terminal-velocity weight for precision ZEM/ZEV capture
+LOCAL LANDING_CAPTURE_ZEM_TGO_MIN IS 4.0. // keep capture horizon realistic; avoids twitchy low-altitude chase
+LOCAL LANDING_CAPTURE_ZEM_TGO_MAX IS 11.0.
 LOCAL LANDING_FINAL_FREEZE_CLR   IS 25.  // only freeze in the last meters when already close
 LOCAL LANDING_FINAL_FREEZE_MISS  IS 18.  // freeze only when the miss is already pad-sized
 LOCAL LANDING_TGO_MIN       IS 2.5.
@@ -238,6 +248,15 @@ LOCAL navSrfSpd          IS 0.
 LOCAL navAlign           IS 0.
 LOCAL dbgSteerN          IS 0.
 LOCAL dbgSteerE          IS 0.
+
+// Diagnostic-only landing prediction fields. These are logged only;
+// they are not used by guidance decisions in this build.
+LOCAL dbgTTouch          IS 0.
+LOCAL dbgPredN           IS 0.
+LOCAL dbgPredE           IS 0.
+LOCAL dbgPredMiss        IS 0.
+LOCAL dbgAimBiasN        IS 0.
+LOCAL dbgAimBiasE        IS 0.
 
 // ------------------------------------------------------------
 // Small helpers
@@ -381,6 +400,19 @@ FUNCTION updateNav {
     SET navClearance TO touchClearance().
     SET navSrfSpd TO SHIP:VELOCITY:SURFACE:MAG.
 
+    // Diagnostic prediction only: where the pad-relative horizontal
+    // error would be at touchdown if the current horizontal velocity
+    // continued for a simple clearance / vertical-speed time estimate.
+    // This is intentionally not used for guidance decisions yet.
+    IF SHIP:VERTICALSPEED < -0.1 {
+        SET dbgTTouch TO Clamp(navClearance / MAX(0.1, ABS(SHIP:VERTICALSPEED)), 0, 999).
+    } ELSE {
+        SET dbgTTouch TO 0.
+    }
+    SET dbgPredN TO navErrN - navVelN * dbgTTouch.
+    SET dbgPredE TO navErrE - navVelE * dbgTTouch.
+    SET dbgPredMiss TO SQRT(dbgPredN^2 + dbgPredE^2).
+
     IF navMiss > 0.1 {
         SET navToward TO (navVelN*navErrN + navVelE*navErrE) / navMiss.
         SET navCross  TO (navVelE*navErrN - navVelN*navErrE) / navMiss.
@@ -409,6 +441,11 @@ FUNCTION logLine {
       + " | HS:" + ROUND(navHs,1)
       + " | Act:" + ROUND(navMiss,0)
       + " | Thr:" + ROUND(THROTTLE*100,0)
+      + " | pAct:" + ROUND(dbgPredMiss,0)
+      + " | tTouch:" + ROUND(dbgTTouch,1)
+      + " | vNE:" + ROUND(navVelN,1) + "/" + ROUND(navVelE,1)
+      + " | predNE:" + ROUND(dbgPredN,0) + "/" + ROUND(dbgPredE,0)
+      + " | biasNE:" + ROUND(dbgAimBiasN,1) + "/" + ROUND(dbgAimBiasE,1)
       + " | " + msg TO LOG_PATH.
 }
 
@@ -510,11 +547,11 @@ activateAG(2).
 GEAR OFF.
 IF DEBUG_LOG {
     IF EXISTS(LOG_PATH) { DELETEPATH(LOG_PATH). }
-    LOG "RTLS bullseye - Pad: " + padLatP + " / " + padLngP + " TerrainAlt:" + ROUND(padAlt,2) TO LOG_PATH.
-    LOG "T+sec | Phase | Alt km | VS | HS | Act m | Thr% | Msg" TO LOG_PATH.
+    LOG "RTLS - Pad: " + padLatP + " / " + padLngP + " TerrainAlt:" + ROUND(padAlt,2) TO LOG_PATH.
+    LOG "T+sec | Phase | Alt km | VS | HS | Act m | Thr% | pAct | tTouch | vN/vE | predN/E | biasN/E | Msg" TO LOG_PATH.
     LOG "----------------------------------------------------------------" TO LOG_PATH.
 }
-PRINT fitLine("Loaded RTLS bullseye - debug/display combined") AT (0, 14).
+PRINT fitLine("Loaded RTLS - debug/display combined") AT (0, 14).
 updateNav().
 IF DEBUG_LOG { logEvent("SCRIPT START terrainAlt:" + ROUND(padAlt,2) + " miss:" + ROUND(navMiss,0)).}
 
@@ -1027,8 +1064,9 @@ UNTIL FALSE {
         IF navHs < ENTRY_HS_EXIT AND entryElapsed > ENTRY_MIN_TIME {
             SET exitReason TO "HS braked miss:" + ROUND(navMiss,0) + " hs:" + ROUND(navHs,1).
         }
-        ELSE IF navMiss < ENTRY_MISS_EXIT AND entryElapsed > ENTRY_MIN_TIME {
-            SET exitReason TO "centered miss:" + ROUND(navMiss,0) + " hs:" + ROUND(navHs,1).
+        ELSE IF navMiss < ENTRY_MISS_EXIT AND dbgPredMiss < ENTRY_CENTER_PRED_EXIT AND entryElapsed > ENTRY_MIN_TIME {
+            SET exitReason TO "centered miss:" + ROUND(navMiss,0) + " hs:" + ROUND(navHs,1)
+                          + " pAct:" + ROUND(dbgPredMiss,0).
         }
         ELSE IF SHIP:ALTITUDE - padAlt < ENTRY_ALT_FLOOR {
             SET exitReason TO "altitude floor miss:" + ROUND(navMiss,0) + " hs:" + ROUND(navHs,1).
@@ -1079,10 +1117,18 @@ UNTIL FALSE {
         LOCAL corrN_A IS navVelN.
         LOCAL corrE_A IS navVelE.
 
-        // Position pull toward pad (both axes). The sign is correct
-        // now (-navErr gives a tilt away from the pad, so fin force
-        // pulls toward the pad).
-        IF navMiss > 40 {
+        // Position pull toward the pad. Use predicted touchdown error when
+        // it is clearly large. The 120-degree logs showed a dangerous case:
+        // current miss crossed near the pad, but pAct was still kilometers
+        // away, so AERO thought it was solved and allowed a huge overshoot.
+        // For small predicted miss, fall back to the gentler current-position
+        // nudge that produced the accurate 60-degree landings.
+        IF dbgPredMiss > AERO_PRED_MIN {
+            LOCAL nudgeN IS Clamp(-dbgPredN * AERO_PRED_K, -AERO_PRED_CAP, AERO_PRED_CAP).
+            LOCAL nudgeE IS Clamp(-dbgPredE * AERO_PRED_K, -AERO_PRED_CAP, AERO_PRED_CAP).
+            SET corrN_A TO corrN_A + nudgeN.
+            SET corrE_A TO corrE_A + nudgeE.
+        } ELSE IF navMiss > 40 {
             LOCAL nudgeN IS Clamp(-navErrN * AERO_POS_K, -AERO_POS_CAP, AERO_POS_CAP).
             LOCAL nudgeE IS Clamp(-navErrE * AERO_POS_K, -AERO_POS_CAP, AERO_POS_CAP).
             SET corrN_A TO corrN_A + nudgeN.
@@ -1305,7 +1351,7 @@ UNTIL FALSE {
                 LOCAL captureLanding IS FALSE.
                 LOCAL captureLeanCap IS LANDING_CAPTURE_LEAN_CAP_DEG.
 
-                IF navMiss <= LANDING_CAPTURE_MISS {
+                IF navMiss <= LANDING_CAPTURE_MISS AND dbgPredMiss <= LANDING_CAPTURE_MISS * 1.75 {
                     SET captureLanding TO TRUE.
                     SET tgoHoriz TO Clamp(tgoLand, 3, 10).
 
@@ -1315,56 +1361,77 @@ UNTIL FALSE {
                     // for the last kilometer. Use stronger position pull while
                     // high, then taper it out before touchdown so we do not
                     // build lateral speed on the legs.
-                    LOCAL capPosK IS LANDING_CAPTURE_POS_K.
-                    LOCAL capPosCap IS LANDING_CAPTURE_POS_CAP.
+                    LOCAL capAccelCap IS LANDING_CAPTURE_POS_CAP.
                     LOCAL capVelK IS LANDING_CAPTURE_VEL_K.
                     LOCAL capVelCap IS LANDING_CAPTURE_VEL_CAP.
                     IF clr > 600 {
-                        SET capPosK TO 0.040.
-                        SET capPosCap TO 3.0.
+                        SET capAccelCap TO 3.0.
                         SET capVelK TO 0.75.
                         SET capVelCap TO 2.2.
                         SET captureLeanCap TO 12.
                     } ELSE IF clr > 200 {
-                        SET capPosK TO 0.035.
-                        SET capPosCap TO 2.4.
+                        SET capAccelCap TO 2.4.
                         SET capVelK TO 0.90.
                         SET capVelCap TO 2.2.
                         SET captureLeanCap TO 10.
-                    } ELSE IF clr > 70 {
-                        SET capPosK TO 0.024.
-                        SET capPosCap TO 1.4.
+                    } ELSE IF clr > 100 {
+                        SET capAccelCap TO 1.4.
                         SET capVelK TO 1.15.
                         SET capVelCap TO 2.4.
-                        SET captureLeanCap TO 6.
+                        SET captureLeanCap TO 5.
                     } ELSE {
-                        SET capPosK TO 0.014.
-                        SET capPosCap TO 0.7.
+                        SET capAccelCap TO 0.7.
                         SET capVelK TO 1.45.
                         SET capVelCap TO 2.8.
                         SET captureLeanCap TO 3.
                     }
 
-                    SET reqAN TO Clamp(navErrN * capPosK, -capPosCap, capPosCap)
-                              + Clamp(-navVelN * capVelK, -capVelCap, capVelCap).
-                    SET reqAE TO Clamp(navErrE * capPosK, -capPosCap, capPosCap)
-                              + Clamp(-navVelE * capVelK, -capVelCap, capVelCap).
+                    // Use lateral ZEM/ZEV while there is still room to move the
+                    // touchdown point. The v10 logs showed current miss shrinking
+                    // but predicted touchdown miss staying around 15-20m west;
+                    // pure position/velocity capture was damping away the last
+                    // useful correction. Below ~100m, stop chasing prediction and
+                    // mostly damp lateral velocity so the legs do not skid.
+                    LOCAL tZem IS Clamp(tgoLand, LANDING_CAPTURE_ZEM_TGO_MIN, LANDING_CAPTURE_ZEM_TGO_MAX).
+                    IF clr > 100 {
+                        LOCAL tZem2 IS tZem * tZem.
+                        SET reqAN TO (6 / tZem2) * navErrN - (LANDING_CAPTURE_ZEM_VEL_K / tZem) * navVelN.
+                        SET reqAE TO (6 / tZem2) * navErrE - (LANDING_CAPTURE_ZEM_VEL_K / tZem) * navVelE.
+                    } ELSE {
+                        SET reqAN TO Clamp(navErrN * 0.010, -0.4, 0.4)
+                                  + Clamp(-navVelN * capVelK, -capVelCap, capVelCap).
+                        SET reqAE TO Clamp(navErrE * 0.010, -0.4, 0.4)
+                                  + Clamp(-navVelE * capVelK, -capVelCap, capVelCap).
+                    }
+
+                    LOCAL reqCapMag IS SQRT(reqAN * reqAN + reqAE * reqAE).
+                    IF reqCapMag > capAccelCap AND reqCapMag > 0.01 {
+                        LOCAL capScale IS capAccelCap / reqCapMag.
+                        SET reqAN TO reqAN * capScale.
+                        SET reqAE TO reqAE * capScale.
+                    }
                 } ELSE {
                     // ZEM/ZEV should not wait until the last 2 km. Use a slightly
                     // longer horizon than the vertical flare while high, then tighten
                     // it near the pad. This brakes overshoot earlier instead of
                     // chasing back over the pad at low altitude.
                     IF clr > 1800 {
-                        SET tgoHoriz TO Clamp(navMiss / MAX(35, navHs), 8, LANDING_TGO_MAX).
+                        SET tgoHoriz TO Clamp(dbgPredMiss / MAX(35, navHs), 10, LANDING_TGO_MAX).
                     } ELSE IF clr > 600 {
-                        SET tgoHoriz TO Clamp(navMiss / MAX(25, navHs), 5, 11).
+                        SET tgoHoriz TO Clamp(dbgPredMiss / MAX(25, navHs), 7, 12).
                     } ELSE {
-                        SET tgoHoriz TO Clamp(tgoLand, 3, 8).
+                        SET tgoHoriz TO Clamp(tgoLand, 4, 9).
                     }
 
+                    // Far miss recovery uses predicted touchdown miss, not the
+                    // instantaneous miss. This prevents the 120-degree case where
+                    // the vehicle crossed near the pad high up, then tried to fight
+                    // back aggressively during the landing burn and touched down
+                    // sideways. The factor of 2 is a constant-acceleration ZEM
+                    // solution to remove the predicted miss over tgoHoriz.
                     LOCAL tgo2 IS tgoHoriz * tgoHoriz.
-                    SET reqAN TO (6 / tgo2) * navErrN - (8 / tgoHoriz) * navVelN.
-                    SET reqAE TO (6 / tgo2) * navErrE - (8 / tgoHoriz) * navVelE.
+                    SET reqAN TO (2 / tgo2) * dbgPredN.
+                    SET reqAE TO (2 / tgo2) * dbgPredE.
                 }
 
                 LOCAL reqAHmag IS SQRT(reqAN * reqAN + reqAE * reqAE).
@@ -1398,6 +1465,14 @@ UNTIL FALSE {
                 LOCAL landingLeanCap IS LANDING_LEAN_CAP_DEG.
                 IF captureLanding {
                     SET landingLeanCap TO MIN(landingLeanCap, captureLeanCap).
+                } ELSE {
+                    // If the pad is not captured by powered landing, do not let
+                    // the controller spend the last kilometer trying to side-slip
+                    // back to the target. That is exactly what caused the 120-degree
+                    // sideways landing. Land safely and let AERO/ENTRY solve earlier.
+                    SET landingLeanCap TO MIN(landingLeanCap, LANDING_FAR_LEAN_CAP_DEG).
+                    IF clr < 800 { SET landingLeanCap TO MIN(landingLeanCap, LANDING_FAR_LOW_LEAN_CAP_DEG). }
+                    IF clr < 140 { SET landingLeanCap TO MIN(landingLeanCap, LANDING_FAR_TERMINAL_LEAN_CAP_DEG). }
                 }
                 IF clr < LANDING_FINAL_LEAN_CLR {
                     SET landingLeanCap TO MIN(landingLeanCap, LANDING_FINAL_LEAN_CAP_DEG).
