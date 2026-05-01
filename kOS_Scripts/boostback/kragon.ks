@@ -39,6 +39,15 @@ FUNCTION Clamp {
     RETURN x.
 }
 
+FUNCTION FitLine {
+    PARAMETER msg.
+    LOCAL s IS "" + msg.
+    IF s:LENGTH > TERMINAL:WIDTH {
+        SET s TO s:SUBSTRING(0, TERMINAL:WIDTH).
+    }
+    RETURN s:PADRIGHT(TERMINAL:WIDTH).
+}
+
 // ============================================================
 //  CONFIGURABLE DEFAULTS
 // ============================================================
@@ -58,7 +67,7 @@ FUNCTION PreDefinedKragon {
     GLOBAL orbitMode       IS 0.
 
     // ── Named landing pads ──────────────────────────────────
-    //  Add or edit pads here.  SelectPad() references these by number.
+    //  Add or edit pads here.  The prelaunch menu references these by number.
     GLOBAL PAD_NAMES IS LIST("PAD 1", "PAD 2", "PAD 3", "Custom").
     GLOBAL PAD_LATS  IS LIST(-0.185464,  -0.205686,  -0.195547,  -0.0972).
     GLOBAL PAD_LNGS  IS LIST(-74.472935, -74.473032, -74.485164, -74.5577).
@@ -98,195 +107,35 @@ FUNCTION DisplayParameters {
 //  NUMERIC INPUT
 // ============================================================
 FUNCTION GetNumericInput {
+    PARAMETER prompt IS "new value".
     LOCAL inputString IS "".
-    PRINT "Enter new value (Enter to confirm): ".
+    LOCAL inputRow IS 12.
+
+    // Do not print on the terminal's bottom row here.  kOS still advances
+    // the cursor after PRINT AT, and printing at HEIGHT-1 can scroll the
+    // terminal so each partial value appears on a new line.  Keep the edit
+    // field on a stable menu row and pad the whole line every redraw.
+    PRINT FitLine("Editing " + prompt + "  (Enter to confirm):") AT (0, inputRow).
+    PRINT FitLine("> ") AT (0, inputRow + 1).
+
     UNTIL FALSE {
         IF TERMINAL:INPUT:HASCHAR {
             LOCAL ch IS TERMINAL:INPUT:GETCHAR().
             IF ch = TERMINAL:INPUT:RETURN { BREAK. }
+            ELSE IF ch = TERMINAL:INPUT:BACKSPACE {
+                IF inputString:LENGTH > 0 {
+                    SET inputString TO inputString:SUBSTRING(0, inputString:LENGTH - 1).
+                }
+            }
             ELSE IF (ch >= "0" AND ch <= "9") OR ch = "." OR ch = "-" {
                 SET inputString TO inputString + ch.
-                PRINT "            " AT (TERMINAL:WIDTH - 15, TERMINAL:HEIGHT - 1).
-                PRINT inputString AT (TERMINAL:WIDTH - 15, TERMINAL:HEIGHT - 1).
             }
+            PRINT FitLine("> " + inputString) AT (0, inputRow + 1).
         }
         WAIT 0.01.
     }
     IF inputString = "" { RETURN 0. }
     RETURN inputString:TONUMBER(0).
-}
-
-// ============================================================
-//  PAD SELECTOR SUB-MENU
-//  Press 9 in the main menu to open this.
-//  Keys 1–(n-1) select a named pad; C = custom lat/lng/alt entry.
-// ============================================================
-FUNCTION SelectPad {
-    CLEARSCREEN.
-    PRINT "── Select Landing Pad ───────────────────────────".
-    LOCAL i IS 0.
-    UNTIL i >= PAD_NAMES:LENGTH - 1 {   // all entries except the last "Custom" slot
-        PRINT (i + 1) + ". " + PAD_NAMES[i] + "   " + PAD_LATS[i] + " / " + PAD_LNGS[i].
-        SET i TO i + 1.
-    }
-    PRINT "C. Custom  (enter lat / lng / alt manually)".
-    PRINT "".
-    PRINT "Current: [" + PAD_NAMES[selectedPad] + "]  — any other key cancels.".
-
-    LOCAL ch IS TERMINAL:INPUT:GETCHAR().
-
-    // Numbered pad choices  (1 … n-1)
-    LOCAL numPads IS PAD_NAMES:LENGTH - 1.   // number of named pads (excludes Custom)
-    LOCAL idx IS ch:TONUMBER(-1).
-    IF idx >= 1 AND idx <= numPads {
-        SET selectedPad TO idx - 1.
-        SET pad_lat TO PAD_LATS[selectedPad].
-        SET pad_lng TO PAD_LNGS[selectedPad].
-        //SET pad_alt TO PAD_ALTS[selectedPad].
-        PRINT "Selected: " + PAD_NAMES[selectedPad].
-        WAIT 0.8.
-
-    // Custom entry
-    } ELSE IF ch = "C" OR ch = "c" {
-        SET selectedPad TO PAD_NAMES:LENGTH - 1.   // point at "Custom" slot
-        PRINT "Latitude  (decimal degrees, S is negative):".
-        SET pad_lat TO GetNumericInput().
-        PRINT "Longitude (decimal degrees, W is negative):".
-        SET pad_lng TO GetNumericInput().
-        PRINT "Elevation ASL (meters):".
-        SET pad_alt TO GetNumericInput().
-        // Overwrite the Custom slot in the lists so the display stays accurate
-        SET PAD_LATS[selectedPad] TO pad_lat.
-        SET PAD_LNGS[selectedPad] TO pad_lng.
-        //SET PAD_ALTS[selectedPad] TO pad_alt.
-        PRINT "Custom pad saved.".
-        WAIT 0.8.
-
-    } ELSE {
-        PRINT "Cancelled.".
-        WAIT 0.5.
-    }
-}
-
-// ============================================================
-//  PRELAUNCH MENU
-// ============================================================
-FUNCTION PreLaunchKragon {
-    PRINT "Mode 0 - Prelaunch".
-    PRINT "".
-    PRINT "Default parameters loaded.  Edit or proceed.".
-    UNTIL FALSE {
-        DisplayParameters().
-        LOCAL choice IS TERMINAL:INPUT:GETCHAR().
-        IF      choice = "R" OR choice = "r" { PreDefinedKragon(). PRINT "Reset to defaults.". WAIT 1. }
-        ELSE IF choice = "1" { SET myCountdownTime  TO GetNumericInput(). }
-        ELSE IF choice = "2" { SET myPitchAngle     TO GetNumericInput(). }
-        ELSE IF choice = "3" { SET myAzimuth        TO GetNumericInput(). }
-        ELSE IF choice = "4" { SET myRoll           TO GetNumericInput(). }
-        ELSE IF choice = "5" { SET kalcon_meco_ap   TO GetNumericInput(). }
-        ELSE IF choice = "6" { SET target_Ap        TO GetNumericInput(). }
-        ELSE IF choice = "7" { SET target_Pe        TO GetNumericInput(). }
-        ELSE IF choice = "8" { SET orbitMode        TO GetNumericInput(). }
-        ELSE IF choice = "9" { SelectPad(). }
-        ELSE {
-            PRINT "Proceeding with these parameters...".
-            WAIT 3.
-            BREAK.
-        }
-        WAIT 0.3.
-    }
-    DisplayParameters().
-    WAIT 4.
-    CLEARSCREEN.
-    PRINT "=================================================".
-    PRINT "         Starting Kragon Systems.".
-    PRINT "=================================================".
-    PRINT " ".
-    SAS OFF.
-    RCS OFF.
-    PRINT "Systems nominal.  Guidance online.".
-    AG10 ON.
-    // ACCESS ARM RETRACT
-    // FUELING OF KALCON 9
-    // FUELCELLS ON.
-    PRINT "Crew Access Arm Retracted".
-    //PRINT "Fuel Cells started and running".
-    PRINT "Starting pad fuel pumps.".
-    AG10 ON.
-    //AG9 ON. //TEMP to speed things up
-    WAIT 5.
-    PRINT "Fueling started.".
-    UNTIL ResourcesFull(0.999) {
-        LOCAL lfAmt IS 0.
-        LOCAL lfCap IS 0.
-        LOCAL oxAmt IS 0.
-        LOCAL oxCap IS 0.
-        LOCAL monoAmt IS 0.
-        LOCAL monoCap IS 0.
-
-        FOR res IN SHIP:RESOURCES {
-            IF res:NAME = "LiquidFuel" {
-            SET lfAmt TO res:AMOUNT.
-            SET lfCap TO res:CAPACITY.
-            }
-            IF res:NAME = "Oxidizer" {
-            SET oxAmt TO res:AMOUNT.
-            SET oxCap TO res:CAPACITY.
-            }
-            IF res:NAME = "MonoPropellant" {
-            SET monoAmt TO res:AMOUNT.
-            SET monoCap TO res:CAPACITY.
-            }
-        }
-
-        LOCAL lfPct IS 100.
-        LOCAL oxPct IS 100.
-        LOCAL moPct IS 100.
-
-        IF lfCap > 0 { SET lfPct TO 100 * lfAmt / lfCap. }
-        IF oxCap > 0 { SET oxPct TO 100 * oxAmt / oxCap. }
-        IF monoCap > 0 { SET moPct TO 100 * monoAmt / monoCap. }
-
-        PRINT "LF: " + ROUND(lfPct,1) + "%  OX: " + ROUND(oxPct,1) + "%  MONO: " + ROUND(moPct,1) + "%      " AT (0, 11).
-
-        WAIT 0.5.
-    }
-    AG9 ON.
-    PRINT "Fueling complete".
-    PRINT "Guidance online.".
-    PRINT "Upper launch clamp retracting.".
-    WAIT 5.
-    PRINT "Strongback Tower moved to postion 1".
-    PRINT "Press any key to arm launch...".
-    LOCAL dummy IS TERMINAL:INPUT:GETCHAR().
-    
-}
-
-// ============================================================
-//  ABORT DETECTION  (active below 30 km)
-// ============================================================
-FUNCTION SetupAbortDetection {
-    PRINT "Abort key: Backspace" AT (0, 25).
-    WHEN TRUE THEN {
-        IF SHIP:ALTITUDE < 30000 {
-            IF ABORT {
-                HUDTEXT("ABORT! ABORT!", 10, 2, 30, red, TRUE).
-                PRINT ">>> ABORT SEQUENCE <<<" AT (0, 24).
-                LOCK THROTTLE TO 1.
-                UNLOCK STEERING.
-                SAS ON.
-                ABORT OFF.
-                KLAXON_START(1, "sawtooth", 0.3).
-                WAIT 3.
-                KLAXON_STOP().
-                PRINT "Manual Control Returned" AT (0, 23).
-                RETURN FALSE.
-            }
-            PRESERVE.
-        } ELSE {
-            RETURN FALSE.
-        }
-    }
 }
 
 FUNCTION TargetPitch {
@@ -316,72 +165,8 @@ FUNCTION TargetPitch {
 }
 
 // ============================================================
-//  HELPER FUNCTIONS
+//  AUDIO HELPERS
 // ============================================================
-FUNCTION Staging {
-    PARAMETER holdTime IS 0.
-    WAIT holdTime.
-    STAGE.
-}
-
-FUNCTION LaunchHold {
-    CLEARSCREEN.
-    PRINT ">>> LAUNCH HOLD <<<" AT (0, 0).
-    PRINT "Press any key to resume..." AT (0, 5).
-    LOCAL dummy IS TERMINAL:INPUT:GETCHAR().
-    WAIT 1.
-}
-
-// Returns TRUE when the vessel's LF/OX/Mono are "full enough"
-FUNCTION ResourcesFull {
-  PARAMETER tol IS 0.999. // 99.9%
-
-  LOCAL lfAmt IS 0.
-  LOCAL lfCap IS 0.
-  LOCAL oxAmt IS 0.
-  LOCAL oxCap IS 0.
-  LOCAL monoAmt IS 0.
-  LOCAL monoCap IS 0.
-
-  FOR r IN SHIP:RESOURCES {
-    IF r:NAME = "LiquidFuel" {
-      SET lfAmt TO r:AMOUNT.
-      SET lfCap TO r:CAPACITY.
-    }
-    IF r:NAME = "Oxidizer" {
-      SET oxAmt TO r:AMOUNT.
-      SET oxCap TO r:CAPACITY.
-    }
-    IF r:NAME = "MonoPropellant" {
-      SET monoAmt TO r:AMOUNT.
-      SET monoCap TO r:CAPACITY.
-    }
-  }
-
-  // Treat "missing resource" as already satisfied (capacity 0)
-  LOCAL lfOK IS (lfCap <= 0) OR (lfAmt / lfCap >= tol).
-  LOCAL oxOK IS (oxCap <= 0) OR (oxAmt / oxCap >= tol).
-  LOCAL monoOK IS (monoCap <= 0) OR (monoAmt / monoCap >= tol).
-
-  RETURN lfOK AND oxOK AND monoOK.
-}
-
-
-FUNCTION Stable {
-    LOCAL tolDeg IS 2.0.
-    LOCAL stableCount IS 0.
-    LOCAL needStable IS 10.
-    UNTIL stableCount >= needStable {
-        LOCAL fwd IS SHIP:FACING:VECTOR:NORMALIZED.
-        LOCAL pro IS SHIP:PROGRADE:VECTOR:NORMALIZED.
-        LOCAL ang IS VANG(fwd, pro).
-        IF ang <= tolDeg { SET stableCount TO stableCount + 1. }
-        ELSE { SET stableCount TO 0. }
-        PRINT "Aligning to PROGRADE... err=" + ROUND(ang, 2) + " deg   " AT (0, 20).
-        WAIT 0.1.
-    }
-}
-
 FUNCTION KLAXON_START {
     PARAMETER voiceIdx IS 1, wave IS "sawtooth", vol IS 1.0.
     LOCAL V0 IS GETVOICE(voiceIdx).
@@ -399,50 +184,195 @@ FUNCTION KLAXON_STOP {
 }
 
 // ============================================================
-//  WRITE RTLS PARAMETERS TO KALCON'S VOLUME
-//  Called just before activating the Kalcon processor.
-//  Creates rtls_params.ks on Kalcon's local volume 0.
-//  kalcon_boot.ks will run this file on startup to override
-//  its hardcoded defaults.
-// ============================================================
-FUNCTION WriteKalconParams {
-    LOCAL paramPath IS "0:/rtls_params.ks".
-
-    // Remove stale file if present
-    IF EXISTS(paramPath) { DELETEPATH(paramPath). }
-
-    // Write using LOG statement — kOS file object WRITELN is not valid
-    LOG "// Auto-generated by kragon_ascent.ks at MECO" TO paramPath.
-    LOG "SET rtls_pad_lat TO " + pad_lat + "." TO paramPath.
-    LOG "SET rtls_pad_lng TO " + pad_lng + "." TO paramPath.
-    //LOG "SET rtls_pad_alt TO " + pad_alt + "." TO paramPath.
-
-    PRINT "RTLS params written to 0:/rtls_params.ks" AT (0, 20).
-}
-
-// ============================================================
 //  MAIN PROGRAM START
 // ============================================================
 PreDefinedKragon().
-PreLaunchKragon().
+PRINT "Mode 0 - Prelaunch".
+PRINT "".
+PRINT "Default parameters loaded.  Edit or proceed.".
+UNTIL FALSE {
+    DisplayParameters().
+    LOCAL choice IS TERMINAL:INPUT:GETCHAR().
+    IF      choice = "R" OR choice = "r" { PreDefinedKragon(). PRINT "Reset to defaults.". WAIT 1. }
+    ELSE IF choice = "1" { SET myCountdownTime  TO GetNumericInput("Countdown time"). }
+    ELSE IF choice = "2" { SET myPitchAngle     TO GetNumericInput("Initial pitch"). }
+    ELSE IF choice = "3" { SET myAzimuth        TO GetNumericInput("Azimuth"). }
+    ELSE IF choice = "4" { SET myRoll           TO GetNumericInput("Roll"). }
+    ELSE IF choice = "5" { SET kalcon_meco_ap   TO GetNumericInput("Kalcon MECO Ap"). }
+    ELSE IF choice = "6" { SET target_Ap        TO GetNumericInput("Target Ap"). }
+    ELSE IF choice = "7" { SET target_Pe        TO GetNumericInput("Target Pe"). }
+    ELSE IF choice = "8" { SET orbitMode        TO GetNumericInput("Orbit mode"). }
+    ELSE IF choice = "9" {
+        CLEARSCREEN.
+        PRINT "── Select Landing Pad ───────────────────────────".
+        LOCAL i IS 0.
+        UNTIL i >= PAD_NAMES:LENGTH - 1 {   // all entries except the last "Custom" slot
+            PRINT (i + 1) + ". " + PAD_NAMES[i] + "   " + PAD_LATS[i] + " / " + PAD_LNGS[i].
+            SET i TO i + 1.
+        }
+        PRINT "C. Custom  (enter lat / lng / alt manually)".
+        PRINT "".
+        PRINT "Current: [" + PAD_NAMES[selectedPad] + "]  — any other key cancels.".
+
+        LOCAL ch IS TERMINAL:INPUT:GETCHAR().
+
+        // Numbered pad choices  (1 … n-1)
+        LOCAL numPads IS PAD_NAMES:LENGTH - 1.   // number of named pads (excludes Custom)
+        LOCAL idx IS ch:TONUMBER(-1).
+        IF idx >= 1 AND idx <= numPads {
+            SET selectedPad TO idx - 1.
+            SET pad_lat TO PAD_LATS[selectedPad].
+            SET pad_lng TO PAD_LNGS[selectedPad].
+            //SET pad_alt TO PAD_ALTS[selectedPad].
+            PRINT "Selected: " + PAD_NAMES[selectedPad].
+            WAIT 0.8.
+
+        // Custom entry
+        } ELSE IF ch = "C" OR ch = "c" {
+            SET selectedPad TO PAD_NAMES:LENGTH - 1.   // point at "Custom" slot
+            PRINT "Latitude  (decimal degrees, S is negative):".
+            SET pad_lat TO GetNumericInput("Landing pad latitude").
+            PRINT "Longitude (decimal degrees, W is negative):".
+            SET pad_lng TO GetNumericInput("Landing pad longitude").
+            //PRINT "Elevation ASL (meters):".
+            //SET pad_alt TO GetNumericInput("Landing pad elevation").
+            // Overwrite the Custom slot in the lists so the display stays accurate
+            SET PAD_LATS[selectedPad] TO pad_lat.
+            SET PAD_LNGS[selectedPad] TO pad_lng.
+            //SET PAD_ALTS[selectedPad] TO pad_alt.
+            PRINT "Custom pad saved.".
+            WAIT 0.8.
+
+        } ELSE {
+            PRINT "Cancelled.".
+            WAIT 0.5.
+        }
+    }
+    ELSE {
+        PRINT "Proceeding with these parameters...".
+        WAIT 3.
+        BREAK.
+    }
+    WAIT 0.3.
+}
+DisplayParameters().
+WAIT 4.
+CLEARSCREEN.
+PRINT "=================================================".
+PRINT "         Starting Kragon Systems.".
+PRINT "=================================================".
+PRINT " ".
+SAS OFF.
+RCS OFF.
+PRINT "Systems nominal.  Guidance online.".
+AG10 ON.
+// ACCESS ARM RETRACT
+// FUELING OF KALCON 9
+// FUELCELLS ON.
+PRINT "Crew Access Arm Retracted".
+//PRINT "Fuel Cells started and running".
+PRINT "Starting pad fuel pumps.".
+AG10 ON.
+//AG9 ON. //TEMP to speed things up
+WAIT 5.
+PRINT "Fueling started.".
+LOCAL fuelingComplete IS FALSE.
+UNTIL fuelingComplete {
+    LOCAL lfAmt IS 0.
+    LOCAL lfCap IS 0.
+    LOCAL oxAmt IS 0.
+    LOCAL oxCap IS 0.
+    LOCAL monoAmt IS 0.
+    LOCAL monoCap IS 0.
+
+    FOR res IN SHIP:RESOURCES {
+        IF res:NAME = "LiquidFuel" {
+        SET lfAmt TO res:AMOUNT.
+        SET lfCap TO res:CAPACITY.
+        }
+        IF res:NAME = "Oxidizer" {
+        SET oxAmt TO res:AMOUNT.
+        SET oxCap TO res:CAPACITY.
+        }
+        IF res:NAME = "MonoPropellant" {
+        SET monoAmt TO res:AMOUNT.
+        SET monoCap TO res:CAPACITY.
+        }
+    }
+
+    LOCAL lfPct IS 100.
+    LOCAL oxPct IS 100.
+    LOCAL moPct IS 100.
+
+    IF lfCap > 0 { SET lfPct TO 100 * lfAmt / lfCap. }
+    IF oxCap > 0 { SET oxPct TO 100 * oxAmt / oxCap. }
+    IF monoCap > 0 { SET moPct TO 100 * monoAmt / monoCap. }
+
+    // Treat "missing resource" as already satisfied (capacity 0).
+    LOCAL lfOK IS (lfCap <= 0) OR (lfAmt / lfCap >= 0.999).
+    LOCAL oxOK IS (oxCap <= 0) OR (oxAmt / oxCap >= 0.999).
+    LOCAL monoOK IS (monoCap <= 0) OR (monoAmt / monoCap >= 0.999).
+    SET fuelingComplete TO lfOK AND oxOK AND monoOK.
+
+    PRINT FitLine("LF: " + ROUND(lfPct,1) + "%  OX: " + ROUND(oxPct,1) + "%  MONO: " + ROUND(moPct,1) + "%      ") AT (0, 11).
+
+    IF NOT fuelingComplete { WAIT 0.5. }
+}
+AG9 ON.
+PRINT "Fueling complete".
+PRINT "Guidance online.".
+PRINT "Upper launch clamp retracting.".
+WAIT 5.
+PRINT "Strongback Tower moved to postion 1".
+PRINT "Press any key to arm launch...".
+LOCAL prelaunchArmKey IS TERMINAL:INPUT:GETCHAR().
+
+
+// Steering/throttle are locked once here. Later guidance code only
+// updates these command variables, including inside loops.
+GLOBAL guidanceThrottleCmd IS 0.
+GLOBAL guidanceSteeringCmd IS SHIP:FACING.
+LOCK THROTTLE TO guidanceThrottleCmd.
+LOCK STEERING TO guidanceSteeringCmd.
 
 LOCAL voice IS getVoice(0).
 LOCAL voiceTickNote IS NOTE(480, 0.1).
 LOCAL voiceLiftoffNote IS NOTE(720, 1).
 
-SetupAbortDetection().
+PRINT FitLine("Abort key: Backspace") AT (0, 25).
+WHEN TRUE THEN {
+    IF SHIP:ALTITUDE < 30000 {
+        IF ABORT {
+            HUDTEXT("ABORT! ABORT!", 10, 2, 30, red, TRUE).
+            PRINT FitLine(">>> ABORT SEQUENCE <<<") AT (0, 24).
+            SET guidanceThrottleCmd TO 1.
+            UNLOCK STEERING.
+            SAS ON.
+            ABORT OFF.
+            KLAXON_START(1, "sawtooth", 0.3).
+            WAIT 3.
+            KLAXON_STOP().
+            PRINT FitLine("Manual Control Returned") AT (0, 23).
+            RETURN FALSE.
+        }
+        PRESERVE.
+    } ELSE {
+        RETURN FALSE.
+    }
+}
 
 // ── Ignition ramp variables ───────────────────────────────
 LOCAL ignitionStarted IS FALSE.
 LOCAL ignitionStartTime IS 0.
 LOCAL rampSec IS 2.0.
 
-// Smooth throttle ramp trigger on engine start
+// Smooth throttle command ramp on engine start. The throttle lock is
+// installed once below; this trigger only updates the command variable.
 WHEN TRUE THEN {
     IF ignitionStarted {
         LOCAL elapsed IS TIME:SECONDS - ignitionStartTime.
         LOCAL u IS Clamp(elapsed / rampSec, 0, 1).
-        LOCK THROTTLE TO u * u.    // quadratic ease-in
+        SET guidanceThrottleCmd TO u * u. // quadratic ease-in
         IF u < 1 { PRESERVE. }
     } ELSE {
         PRESERVE.
@@ -460,35 +390,32 @@ FROM { LOCAL countdown IS myCountdownTime. }
 UNTIL countdown < 0
 STEP { SET countdown TO countdown - 1. }
 DO {
-    PRINT "T-" + countdown + "         " AT (0, 4).
+    PRINT FitLine("T-" + countdown + "         ") AT (0, 4).
     HUDTEXT("T- " + countdown, 1.5, 2, 18, white, FALSE).
 
     // T-6: Kalcon engine ignition + throttle ramp
     IF countdown = 2 AND NOT ignitionStarted {
-        PRINT "Kalcon Engine Start             " AT (0, 14).
-        LOCK THROTTLE TO 0.
+        PRINT FitLine("Kalcon Engine Start             ") AT (0, 14).
+        SET guidanceThrottleCmd TO 0.
         STAGE.                               // fire Kalcon engines
         SET ignitionStarted TO TRUE.
         SET ignitionStartTime TO TIME:SECONDS.
-        //LOCK STEERING TO UP + R(0, 0, myRoll).
     }
 
     // T-0: Release launch clamps
     IF countdown = 0 {
-        PRINT "Clamp Release — Liftoff!        " AT (0, 15).
+        PRINT FitLine("Clamp Release — Liftoff!        ") AT (0, 15).
         AG8 ON.
         STAGE.
-        //LOCK STEERING TO HEADING(90, 90, 0).
-        LOCK STEERING TO LOOKDIRUP(HEADING(90,90):VECTOR, SHIP:FACING:TOPVECTOR).
-        //LOCK STEERING TO UP + R(0, 0, myRoll).
+        SET guidanceSteeringCmd TO LOOKDIRUP(HEADING(90,90):VECTOR, SHIP:FACING:TOPVECTOR).
         voice:PLAY(voiceLiftoffNote).
         IF SHIP:AVAILABLETHRUST <= SHIP:MASS * 9.81 {
-            PRINT "IGNITION FAILURE — HOLDING      " AT (0, 16).
-            LOCK THROTTLE TO 0.
+            PRINT FitLine("IGNITION FAILURE — HOLDING      ") AT (0, 16).
+            SET guidanceThrottleCmd TO 0.
         }
     }
 
-    IF ignitionStarted { PRINT "Throttle: " + ROUND(THROTTLE * 100, 1) + "%     " AT (0, 8). }
+    IF ignitionStarted { PRINT FitLine("Throttle: " + ROUND(THROTTLE * 100, 1) + "%     ") AT (0, 8). }
     IF countdown <= 5 AND countdown > 0 { voice:PLAY(voiceTickNote). }
 
     // Abort / Hold keys during countdown
@@ -496,7 +423,7 @@ DO {
         LOCAL key IS TERMINAL:INPUT:GETCHAR().
         IF key = "A" OR key = "a" {
             HUDTEXT("ABORT! ABORT ABORT!", 5, 2, 15, red, TRUE).
-            LOCK THROTTLE TO 0.
+            SET guidanceThrottleCmd TO 0.
             KLAXON_START(1, "sawtooth", 0.2).
             WAIT 5.
             KLAXON_STOP().
@@ -505,10 +432,15 @@ DO {
         }
         IF key = "H" OR key = "h" {
             HUDTEXT("HOLD..HOLD..HOLD!", 5, 2, 15, yellow, TRUE).
-            LOCK THROTTLE TO 0.
+            SET guidanceThrottleCmd TO 0.
             SET ignitionStarted TO FALSE.
             SET countdown TO myCountdownTime + 1.
-            LaunchHold().
+
+            CLEARSCREEN.
+            PRINT FitLine(">>> LAUNCH HOLD <<<") AT (0, 0).
+            PRINT FitLine("Press any key to resume...") AT (0, 5).
+            LOCAL holdResumeKey IS TERMINAL:INPUT:GETCHAR().
+            WAIT 1.
         }
     }
 
@@ -519,20 +451,20 @@ DO {
 //  MODE 1 — LIFTOFF
 // ============================================================
 SET MODE TO 1.
-PRINT "Mode 1 - Liftoff                                " AT (0, 0).
-LOCK THROTTLE TO 1.0.
+PRINT FitLine("Mode 1 - Liftoff                                ") AT (0, 0).
+SET guidanceThrottleCmd TO 1.0.
 
 WAIT UNTIL SHIP:ALTITUDE > 200.
-LOCK STEERING TO HEADING(myAzimuth, 90, myRoll).
+SET guidanceSteeringCmd TO HEADING(myAzimuth, 90, myRoll).
 
 WAIT UNTIL SHIP:ALTITUDE > turn_start_alt.
-LOCK STEERING TO HEADING(myAzimuth, myPitchAngle, myRoll).
+SET guidanceSteeringCmd TO HEADING(myAzimuth, myPitchAngle, myRoll).
 
 // ============================================================
 //  MODE 2 — ASCENT / GRAVITY TURN  (Kalcon burning)
 // ============================================================
 SET MODE TO 2.
-PRINT "Mode 2 - Ascent / Gravity Turn                  " AT (0, 0).
+PRINT FitLine("Mode 2 - Ascent / Gravity Turn                  ") AT (0, 0).
 
 LOCAL smoothedThrottle IS 1.0.
 LOCAL throttleSlewPerSec IS 0.35.
@@ -551,14 +483,14 @@ UNTIL SHIP:APOAPSIS >= kalcon_meco_ap {
         SET maxQReached TO TRUE.
         SET targetThrottle TO maxq_throt.
         SET dynQPeak TO dynPressKpa.
-        PRINT "MAX-Q — Throttling back         " AT (0, 16).
+        PRINT FitLine("MAX-Q — Throttling back         ") AT (0, 16).
     }
     IF maxQReached AND NOT maxQPassed {
         IF dynPressKpa > dynQPeak { SET dynQPeak TO dynPressKpa. }
         IF dynPressKpa <= (dynQPeak * 0.90) {
             SET maxQPassed TO TRUE.
             SET targetThrottle TO 1.0.
-            PRINT "MAX-Q PASSED — Full throttle   " AT (0, 16).
+            PRINT FitLine("MAX-Q PASSED — Full throttle   ") AT (0, 16).
         }
     }
 
@@ -580,21 +512,21 @@ UNTIL SHIP:APOAPSIS >= kalcon_meco_ap {
     LOCAL maxStep IS throttleSlewPerSec * dt.
     LOCAL diff IS Clamp(throttleCmd - smoothedThrottle, -maxStep, maxStep).
     SET smoothedThrottle TO Clamp(smoothedThrottle + diff, 0, 1).
-    LOCK THROTTLE TO smoothedThrottle.
+    SET guidanceThrottleCmd TO smoothedThrottle.
 
     // Gravity turn steering
     LOCAL pitchCmd IS Clamp(TargetPitch(), 0, 90).
-    LOCK STEERING TO HEADING(myAzimuth, pitchCmd, myRoll).
+    SET guidanceSteeringCmd TO HEADING(myAzimuth, pitchCmd, myRoll).
 
     // Telemetry display
-    PRINT "Alt:     " + ROUND(SHIP:ALTITUDE / 1000, 2) + " km      " AT (0, 4).
-    PRINT "Ap:      " + ROUND(SHIP:APOAPSIS / 1000, 1) + " km  (target " + ROUND(kalcon_meco_ap / 1000, 1) + " km)   " AT (0, 5).
-    PRINT "Speed:   " + ROUND(SHIP:VELOCITY:SURFACE:MAG) + " m/s     " AT (0, 6).
-    PRINT "DynPres: " + ROUND(dynPressKpa, 1) + " kPa       " AT (0, 7).
-    PRINT "Pitch:   " + ROUND(pitchCmd, 1) + " deg       " AT (0, 8).
-    PRINT "Throttle:" + ROUND(THROTTLE * 100, 1) + "%           " AT (0, 9).
+    PRINT FitLine("Alt:     " + ROUND(SHIP:ALTITUDE / 1000, 2) + " km      ") AT (0, 4).
+    PRINT FitLine("Ap:      " + ROUND(SHIP:APOAPSIS / 1000, 1) + " km  (target " + ROUND(kalcon_meco_ap / 1000, 1) + " km)   ") AT (0, 5).
+    PRINT FitLine("Speed:   " + ROUND(SHIP:VELOCITY:SURFACE:MAG) + " m/s     ") AT (0, 6).
+    PRINT FitLine("DynPres: " + ROUND(dynPressKpa, 1) + " kPa       ") AT (0, 7).
+    PRINT FitLine("Pitch:   " + ROUND(pitchCmd, 1) + " deg       ") AT (0, 8).
+    PRINT FitLine("Throttle:" + ROUND(THROTTLE * 100, 1) + "%           ") AT (0, 9).
 
-    WAIT 0.05.
+    WAIT 0.01.
 }
 
 // ============================================================
@@ -602,16 +534,27 @@ UNTIL SHIP:APOAPSIS >= kalcon_meco_ap {
 // ============================================================
 SET MODE TO 3.
 CLEARSCREEN.
-PRINT "Mode 3 - MECO / Kalcon Handoff                  " AT (0, 0).
-PRINT "Ap target reached: " + ROUND(SHIP:APOAPSIS / 1000, 1) + " km" AT (0, 2).
+PRINT FitLine("Mode 3 - MECO / Kalcon Handoff                  ") AT (0, 0).
+PRINT FitLine("Ap target reached: " + ROUND(SHIP:APOAPSIS / 1000, 1) + " km") AT (0, 2).
 
 // Step 1: Write pad parameters to Kalcon's volume
-PRINT "Writing RTLS parameters to Kalcon volume..." AT (0, 4).
-WriteKalconParams().
+PRINT FitLine("Writing RTLS parameters to Kalcon volume...") AT (0, 4).
+LOCAL paramPath IS "0:/rtls_params.ks".
+
+// Remove stale file if present
+IF EXISTS(paramPath) { DELETEPATH(paramPath). }
+
+// Write using LOG statement — kOS file object WRITELN is not valid
+LOG "// Auto-generated by kragon_ascent.ks at MECO" TO paramPath.
+LOG "SET rtls_pad_lat TO " + pad_lat + "." TO paramPath.
+LOG "SET rtls_pad_lng TO " + pad_lng + "." TO paramPath.
+//LOG "SET rtls_pad_alt TO " + pad_alt + "." TO paramPath.
+
+PRINT FitLine("RTLS params written to 0:/rtls_params.ks") AT (0, 20).
 
 // Step 2: Activate the Kalcon processor
 //         kalcon_boot.ks will detect the params file and run falcon9_rtls
-PRINT "Activating Kalcon processor..." AT (0, 5).
+PRINT FitLine("Activating Kalcon processor...") AT (0, 5).
 PROCESSOR("Kalcon9"):ACTIVATE().
 
 // Step 3: Brief pause — let Kalcon CPU boot and read the params file
@@ -619,26 +562,26 @@ PROCESSOR("Kalcon9"):ACTIVATE().
 WAIT 1.5.
 
 // Step 4: MECO — cut Kalcon engines
-PRINT "MECO — Kalcon Engine Cutoff" AT (0, 6).
-LOCK THROTTLE TO 0.
+PRINT FitLine("MECO — Kalcon Engine Cutoff") AT (0, 6).
+SET guidanceThrottleCmd TO 0.
 WAIT 1.0.
 
 // Step 5: Separation
-PRINT "Kalcon Separation" AT (0, 7).
+PRINT FitLine("Kalcon Separation") AT (0, 7).
 // Point prograde for a clean horizontal separation
-LOCK STEERING TO PROGRADE.
+SET guidanceSteeringCmd TO PROGRADE.
 WAIT 2.0.
 STAGE.    // decouple Kalcon
 
 // Step 6: Coast — let separation distance build
-PRINT "Coasting — building separation distance..." AT (0, 8).
+PRINT FitLine("Coasting — building separation distance...") AT (0, 8).
 WAIT 2.0.
 AG2 ON.
 // Step 7: Kragon engine ignition
-PRINT "Kragon Engine Ignition!" AT (0, 9).
+PRINT FitLine("Kragon Engine Ignition!") AT (0, 9).
 //STAGE.                          // fire Kragon second stage engine
-LOCK THROTTLE TO 1.0.
-PRINT "Abort fins retracted" AT (0, 10).
+SET guidanceThrottleCmd TO 1.0.
+PRINT FitLine("Abort fins retracted") AT (0, 10).
 WAIT 1.
 
 // ============================================================
@@ -646,7 +589,7 @@ WAIT 1.
 // ============================================================
 SET MODE TO 4.
 CLEARSCREEN.
-PRINT "Mode 4 - Kragon Second Stage Burn               " AT (0, 0).
+PRINT FitLine("Mode 4 - Kragon Second Stage Burn               ") AT (0, 0).
 
 // Burn prograde until Ap ≥ target_Ap.
 // After max-Q is long gone, full throttle is fine.
@@ -664,33 +607,33 @@ UNTIL (SHIP:APOAPSIS >= target_Ap) { //AND SHIP:PERIAPSIS >= -5000) {
     SET stage2SlewLast TO TIME:SECONDS.
     LOCAL step2 IS 0.35 * dt2.
     SET stage2Smoothed TO Clamp(stage2Smoothed + Clamp(tCmd - stage2Smoothed, -step2, step2), 0, 1).
-    LOCK THROTTLE TO stage2Smoothed.
+    SET guidanceThrottleCmd TO stage2Smoothed.
 
     // Pitch: drive to horizon once Ap ≥ target; otherwise follow turn schedule
     LOCAL pitchS2 IS 0.
     IF SHIP:APOAPSIS < target_Ap {
         SET pitchS2 TO Clamp(TargetPitch(), -5, 30).
     }
-    LOCK STEERING TO HEADING(myAzimuth, pitchS2, myRoll).
+    SET guidanceSteeringCmd TO HEADING(myAzimuth, pitchS2, myRoll).
 
-    PRINT "Alt:     " + ROUND(SHIP:ALTITUDE / 1000, 2) + " km       " AT (0, 4).
-    PRINT "Ap:      " + ROUND(SHIP:APOAPSIS / 1000, 1) + " km        " AT (0, 5).
-    PRINT "Pe:      " + ROUND(SHIP:PERIAPSIS / 1000, 1) + " km        " AT (0, 6).
-    PRINT "Throttle:" + ROUND(THROTTLE * 100, 1) + "%            " AT (0, 7).
+    PRINT FitLine("Alt:     " + ROUND(SHIP:ALTITUDE / 1000, 2) + " km       ") AT (0, 4).
+    PRINT FitLine("Ap:      " + ROUND(SHIP:APOAPSIS / 1000, 1) + " km        ") AT (0, 5).
+    PRINT FitLine("Pe:      " + ROUND(SHIP:PERIAPSIS / 1000, 1) + " km        ") AT (0, 6).
+    PRINT FitLine("Throttle:" + ROUND(THROTTLE * 100, 1) + "%            ") AT (0, 7).
 
     // Safety cutoff — don't overshoot Ap badly
     IF SHIP:APOAPSIS >= (target_Ap + 8000) { BREAK. }
 
-    WAIT 0.05.
+    WAIT 0.01.
 }
 
 // Stage 2 SECO
-LOCK THROTTLE TO 0.
+SET guidanceThrottleCmd TO 0.
 UNLOCK STEERING.
 SAS ON.
 RCS ON.
-PRINT "Stage 2 SECO" AT (0, 9).
-PRINT "Handing off to Orbit circularization." AT (0, 10).
+PRINT FitLine("Stage 2 SECO") AT (0, 9).
+PRINT FitLine("Handing off to Orbit circularization.") AT (0, 10).
 WAIT 3.
 
 // ============================================================
@@ -720,6 +663,7 @@ PRINT "Periapsis: " + ROUND(SHIP:ORBIT:PERIAPSIS / 1000, 1) + " km".
 SAS ON.
 RCS OFF.
 UNLOCK STEERING.
+UNLOCK THROTTLE.
 SET SHIP:CONTROL:NEUTRALIZE TO TRUE.
 PRINT "".
 PRINT ">>>>> KRAGON ASCENT COMPLETE <<<<<".

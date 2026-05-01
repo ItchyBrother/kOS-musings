@@ -1,5 +1,5 @@
 // ============================================================
-// rtls.ks  (RTLS bullseye with no-hop touchdown fix)
+// rtls.ks  (RTLS bullseye with accuracy-recovered fast landing profile)
 //
 // Proof-of-geometry RTLS with terminal hoverslam/settle. Entry and AERO
 // still do the heavy precision work; the landing burn should preserve the
@@ -43,7 +43,7 @@ PARAMETER padLngP IS -74.5577.
 // Constants
 // ------------------------------------------------------------
 // Debug logging. Set DEBUG_LOG to FALSE to disable file logging.
-LOCAL DEBUG_LOG          IS FALSE.
+LOCAL DEBUG_LOG          IS TRUE.
 LOCAL LOG_PATH           IS "0:/rtls_log.txt".
 LOCAL LOG_DT             IS 1.5.
 
@@ -61,8 +61,8 @@ LOCAL BB_MAX_TIME        IS 96.
 LOCAL BB_REV_FLOOR       IS 10.
 // Dynamic boostback target bounds + over-boost margin
 LOCAL BB_TOWARD_MIN      IS 55.      // hard floor (very close pads)
-LOCAL BB_TOWARD_MAX      IS 160.     // hard ceiling (very far pads)
-LOCAL BB_TOWARD_MARGIN   IS 8.       // over-boost m/s beyond analytic solution
+LOCAL BB_TOWARD_MAX      IS 150.     // hard ceiling; avoid excessive padward energy
+LOCAL BB_TOWARD_MARGIN   IS 2.       // small boostback bias; avoid overshooting the pad
 LOCAL BB_AH_FRAC         IS 0.70.    // conservative fraction of thrust*sin(lean)
 
 // Corrective
@@ -120,25 +120,33 @@ LOCAL IMPACT_CLR         IS 2.
 // values throughout, so it adapts to whatever thrust the AGs
 // actually produce.
 LOCAL LANDING_HANDOFF_CLR   IS 6000.  // AERO->LANDING trigger (m above pad)
-LOCAL LANDING_IGNITE_MARGIN IS 8.     // hoverslam margin; avoid high hover
-LOCAL LANDING_SAFETY_FRAC   IS 0.96.  // tighter hoverslam planning, still leaves margin
+LOCAL LANDING_IGNITE_MARGIN IS 60.    // extra cushion so the terminal brake is not saturated near the ground
+LOCAL LANDING_SAFETY_FRAC   IS 0.97.  // reserve a little more braking authority than v4
 LOCAL LANDING_SOLO_THR_OK   IS 0.85.  // switch to 1 eng if projected thr<=85%
-LOCAL LANDING_SOLO_VS_MAX   IS 120.   // only switch to 1 eng when VS above this in magnitude
-LOCAL LANDING_GEAR_CLR      IS 200.   // deploy gear below this clearance
-LOCAL LANDING_EXIT_CLR      IS 70.    // hand off before low-altitude ZEM can kick sideways
-LOCAL LANDING_EXIT_VS       IS 35.    // allow final flare without long hover
-LOCAL LANDING_LEAN_CAP_DEG  IS 25.    // hard cap on lean during landing
-LOCAL LANDING_FINAL_LEAN_CLR     IS 120. // taper horizontal authority near touchdown
-LOCAL LANDING_FINAL_LEAN_CAP_DEG IS 5.   // max landing lean below FINAL_LEAN_CLR
-LOCAL LANDING_FINAL_FREEZE_CLR   IS 25.  // freeze lateral chase in final meters if close
-LOCAL LANDING_FINAL_FREEZE_MISS  IS 30.  // do not chase sub-pad errors inside this radius
-LOCAL LANDING_TGO_MIN       IS 2.
-LOCAL LANDING_TGO_MAX       IS 10.
-LOCAL LANDING_TARGET_FAST    IS 90.    // desired down-speed high in landing burn
-LOCAL LANDING_TARGET_MID     IS 55.    // desired down-speed through mid altitude
-LOCAL LANDING_TARGET_LOW     IS 28.    // desired down-speed below ~900 m
-LOCAL LANDING_TARGET_FINAL   IS 12.    // desired down-speed above final flare
-LOCAL LANDING_TARGET_FLARE   IS 4.5.   // short final flare target
+LOCAL LANDING_SOLO_VS_MAX   IS 55.    // keep 3 engines until most vertical speed is arrested
+LOCAL LANDING_GEAR_CLR      IS 250.   // deploy gear before the terminal brake gets busy
+LOCAL LANDING_EXIT_CLR      IS 45.    // hand off only after the main brake is controlled, with room to settle
+LOCAL LANDING_EXIT_VS       IS 6.     // do not enter TOUCHDOWN while still carrying a hard vertical rate
+LOCAL LANDING_LEAN_CAP_DEG  IS 25.    // hard cap on lean during landing when far from the pad
+LOCAL LANDING_FINAL_LEAN_CLR     IS 140. // preserve lateral authority until close to touchdown
+LOCAL LANDING_FINAL_LEAN_CAP_DEG IS 8.   // enough late authority to brake overshoot without a kick
+LOCAL LANDING_CAPTURE_MISS       IS 350. // if AERO already solved miss, landing burn must preserve it
+LOCAL LANDING_CAPTURE_POS_K      IS 0.028. // base powered pull toward pad in precision capture mode
+LOCAL LANDING_CAPTURE_POS_CAP    IS 2.2.   // cap position pull; altitude-adaptive below
+LOCAL LANDING_CAPTURE_VEL_K      IS 0.90.  // damp closure without cancelling the pad pull too early
+LOCAL LANDING_CAPTURE_VEL_CAP    IS 2.4.
+LOCAL LANDING_CAPTURE_LEAN_CAP_DEG IS 12. // capture mode can use a little more lean while still high
+LOCAL LANDING_FINAL_FREEZE_CLR   IS 25.  // only freeze in the last meters when already close
+LOCAL LANDING_FINAL_FREEZE_MISS  IS 18.  // freeze only when the miss is already pad-sized
+LOCAL LANDING_TGO_MIN       IS 2.5.
+LOCAL LANDING_TGO_MAX       IS 14.
+LOCAL LANDING_TARGET_FAST    IS 125.   // fast high-altitude descent without starving correction time
+LOCAL LANDING_TARGET_MID     IS 105.   // keep near 100 m/s through mid altitude
+LOCAL LANDING_TARGET_LOW     IS 65.    // begin meaningful braking before the last few hundred meters
+LOCAL LANDING_TARGET_FINAL   IS 22.    // final pre-flare target; no long hover
+LOCAL LANDING_TARGET_FLARE   IS 5.     // short final flare target, slow enough that TOUCHDOWN is not overloaded
+LOCAL LANDING_GATE_CLR       IS 650.   // below this, force speed to be safe by the TOUCHDOWN handoff altitude
+LOCAL LANDING_GATE_MARGIN    IS 8.     // minimum distance for terminal gate calculations
 
 // Touchdown (hover-and-settle to pad)
 //
@@ -147,18 +155,18 @@ LOCAL LANDING_TARGET_FLARE   IS 4.5.   // short final flare target
 // which proportionally reduces fuel burn since throttle during
 // steady descent is near hover (~40%). -6 m/s is about 3x faster
 // than -2 m/s and saves roughly 2/3 of TOUCHDOWN fuel.
-LOCAL TOUCH_TARGET_VS     IS -8.    // fast terminal descent; final flare handles last meters
-LOCAL TOUCH_TARGET_VS_LOW IS -6.    // avoid hover/bounce while still soft enough for legs
-LOCAL TOUCH_LOW_CLR       IS 15.    // final flare band
-LOCAL TOUCH_VS_GAIN       IS 0.30.  // gentler P gain; 3 engines are sensitive near ground
-LOCAL TOUCH_POS_K         IS 0.08.  // horizontal position pull
-LOCAL TOUCH_POS_CAP       IS 3.     // cap on position term
-LOCAL TOUCH_VEL_K         IS 0.45.  // horizontal velocity damping
-LOCAL TOUCH_VEL_CAP       IS 3.     // cap on velocity term
-LOCAL TOUCH_MAX_LEAN      IS 2.     // max lean during touchdown
-LOCAL TOUCH_MAX_LEAN_LOW  IS 0.8.   // nearly vertical in the final meters
-LOCAL TOUCH_FREEZE_CLR    IS 20.    // below this, prefer landing over pad-chasing
-LOCAL TOUCH_FREEZE_MISS   IS 30.    // freeze lateral chase when already close
+LOCAL TOUCH_TARGET_VS     IS -4.5.  // terminal descent after hoverslam has already arrested the main speed
+LOCAL TOUCH_TARGET_VS_LOW IS -2.0.  // last-meter flare only; avoid hover or bounce
+LOCAL TOUCH_LOW_CLR       IS 6.     // final flare band
+LOCAL TOUCH_VS_GAIN       IS 0.34.  // a little firmer now that LANDING hands off slower
+LOCAL TOUCH_POS_K         IS 0.10.  // horizontal position pull
+LOCAL TOUCH_POS_CAP       IS 4.     // cap on position term
+LOCAL TOUCH_VEL_K         IS 0.55.  // horizontal velocity damping
+LOCAL TOUCH_VEL_CAP       IS 4.     // cap on velocity term
+LOCAL TOUCH_MAX_LEAN      IS 3.     // max lean during touchdown
+LOCAL TOUCH_MAX_LEAN_LOW  IS 1.0.   // nearly vertical in the final meters
+LOCAL TOUCH_FREEZE_CLR    IS 8.     // freeze only at the very end if already close
+LOCAL TOUCH_FREEZE_MISS   IS 15.    // freeze lateral chase only when already pad-sized
 LOCAL TOUCH_COMMIT_CLR    IS 3.0.   // below this, stop hovering and let legs settle
 LOCAL TOUCH_COMMIT_VS     IS -2.0.  // commit when descending slower than this
 LOCAL TOUCH_UPWARD_CUT_CLR IS 5.0.  // if rising this low, cut thrust immediately
@@ -208,7 +216,7 @@ LOCAL touchCommitMode    IS FALSE.
 LOCAL bestMissSeen       IS 99999.
 LOCAL bestMissAlt        IS 0.
 
-// Boostback target diagnostic values (set by computeBoostTarget)
+// Boostback target diagnostic values (computed inline during PH_INIT)
 LOCAL bbDiagDbb          IS 0.
 LOCAL bbDiagTcoast       IS 0.
 LOCAL bbDiagAh           IS 0.
@@ -241,34 +249,7 @@ FUNCTION Clamp {
     RETURN valueIn.
 }
 
-FUNCTION SignNum {
-    PARAMETER valueIn.
-    IF valueIn > 0 { RETURN 1. }
-    IF valueIn < 0 { RETURN -1. }
-    RETURN 0.
-}
 
-FUNCTION shipGeo {
-    RETURN SHIP:GEOPOSITION.
-}
-
-FUNCTION surfaceHeightASL {
-    LOCAL surfH IS shipGeo():TERRAINHEIGHT.
-    IF surfH < 0 { SET surfH TO 0. }
-    RETURN surfH.
-}
-
-FUNCTION terrainAGLCalc {
-    LOCAL aglCalc IS SHIP:ALTITUDE - surfaceHeightASL().
-    IF aglCalc < 0 { RETURN 0. }
-    RETURN aglCalc.
-}
-
-FUNCTION bottomRadarClearance {
-    LOCAL clr IS SHIP:BOUNDS:BOTTOMALTRADAR.
-    IF clr < 0 { SET clr TO 0. }
-    RETURN clr.
-}
 
 FUNCTION padClearance {
     LOCAL clr IS SHIP:ALTITUDE - padAlt.
@@ -276,27 +257,20 @@ FUNCTION padClearance {
     RETURN clr.
 }
 
-FUNCTION descentClearance {
-    RETURN padClearance().
-}
 
 FUNCTION touchClearance {
-    LOCAL padClr    IS padClearance().
-    LOCAL radarClr  IS ALT:RADAR.
-    LOCAL bottomClr IS bottomRadarClearance().
-    LOCAL outClr    IS padClr.
+    LOCAL padClr   IS padClearance().
+    LOCAL radarClr IS ALT:RADAR.
+    LOCAL outClr   IS padClr.
+
+    // Keep this clearance path light because updateNav() runs in the main
+    // control loop.
     IF radarClr > 0 AND radarClr < outClr + 200 {
         SET outClr TO MIN(outClr, radarClr).
-    }
-    IF bottomClr > 0 AND bottomClr < outClr + 200 {
-        SET outClr TO MIN(outClr, bottomClr).
     }
     RETURN outClr.
 }
 
-FUNCTION northAxis { RETURN HEADING(0,0):FOREVECTOR. }
-FUNCTION eastAxis  { RETURN HEADING(90,0):FOREVECTOR. }
-FUNCTION upAxis    { RETURN UP:FOREVECTOR. }
 
 FUNCTION nsText {
     PARAMETER meterValue.
@@ -342,110 +316,9 @@ FUNCTION landingTargetDown {
     PARAMETER clr.
     IF clr > 2500 { RETURN LANDING_TARGET_FAST. }
     IF clr > 900  { RETURN LANDING_TARGET_MID. }
-    IF clr > 180  { RETURN LANDING_TARGET_LOW. }
-    IF clr > 35   { RETURN LANDING_TARGET_FINAL. }
+    IF clr > 650  { RETURN LANDING_TARGET_LOW. }
+    IF clr > 220  { RETURN LANDING_TARGET_FINAL. }
     RETURN LANDING_TARGET_FLARE.
-}
-
-// ------------------------------------------------------------
-// Dynamic boostback target
-//
-// Solve for padward velocity at boostback end such that, after a
-// ballistic coast to entry trigger altitude, the entry burn can
-// close the remaining horizontal distance while nulling HS within
-// its decel budget.
-//
-// CRITICAL: dBB must be the miss at BOOSTBACK END, not at INIT.
-// Between INIT and boostback end the ship keeps drifting away
-// because it has to align (flip) and then kill its away-velocity
-// (reverse burn). For Falcon-class boosters that drift is on the
-// order of 3-6 km and was the silent killer of the previous build.
-//
-// dBB_proj = navMiss
-//          + awayNow * tFlipEst                 (drift during flip)
-//          + awayNow^2 / (2 * aFull)            (drift during reverse)
-//
-// Coast time is computed from the PROJECTED altitude and VS at
-// boostback end, not the current ones, because flip+boostback adds
-// significant altitude (the thrust is mostly horizontal, so VS
-// is near-ballistic during that window).
-//
-//   dBB_proj = vCoast * tCoast + vCoast^2 / (2 * aH)
-//   => vCoast = sqrt(aH^2 * tCoast^2 + 2*aH*dBB_proj) - aH*tCoast
-//
-// BB_TOWARD_MARGIN is added so we over-boost slightly (entry handles
-// overshoot better than undershoot).
-// ------------------------------------------------------------
-FUNCTION computeBoostTarget {
-    LOCAL dBBnow   IS navMiss.
-    LOCAL awayNow  IS MAX(0, -navToward).
-    LOCAL vsNow    IS SHIP:VERTICALSPEED.
-    LOCAL altNow   IS SHIP:ALTITUDE.
-    LOCAL gLocal   IS SHIP:BODY:MU / ((SHIP:BODY:RADIUS + altNow)^2).
-
-    // Full-thrust horizontal decel during REV (thrust is near-
-    // retrograde in the horizontal plane, so use cos(FLIP_PITCH)).
-    LOCAL aFull IS 15.
-    IF SHIP:MASS > 0.1 AND SHIP:AVAILABLETHRUST > 0.1 {
-        SET aFull TO MAX(5, SHIP:AVAILABLETHRUST / SHIP:MASS * COS(FLIP_PITCH)).
-    }
-
-    // Time budget from INIT to end of boostback
-    LOCAL tFlipEst    IS 8.                      // alignment duration
-    LOCAL tReverseEst IS awayNow / aFull.        // full-thrust away-kill
-    LOCAL tSetEst     IS 5.                      // SET/FINE cleanup overhead
-    LOCAL tPreCoast   IS tFlipEst + tReverseEst + tSetEst.
-
-    // Horizontal drift during flip + reverse burn
-    LOCAL driftFlip IS awayNow * tFlipEst.
-    LOCAL driftRev  IS awayNow * awayNow / (2 * aFull).
-    LOCAL dBBproj   IS dBBnow + driftFlip + driftRev.
-
-    // Projected altitude and VS at boostback end (vertical is near-
-    // ballistic during flip+boostback since thrust is near-horizontal)
-    LOCAL vsProj  IS vsNow - gLocal * tPreCoast.
-    LOCAL altProj IS altNow + vsNow * tPreCoast - 0.5 * gLocal * tPreCoast * tPreCoast.
-
-    // Ballistic coast time from boostback end to entry trigger altitude
-    LOCAL altDelta  IS altProj - ENTRY_TRIGGER_ALT.
-    LOCAL tCoastEst IS 60.
-    IF vsProj > 0 {
-        // Ascending after boostback - arc, fall to entry alt
-        LOCAL discT IS vsProj*vsProj + 2*gLocal*altDelta.
-        IF discT < 0 { SET discT TO 0. }
-        SET tCoastEst TO (vsProj + SQRT(discT)) / gLocal.
-    } ELSE {
-        // Already descending
-        LOCAL absVs IS ABS(vsProj).
-        IF altDelta <= 0 {
-            SET tCoastEst TO 4.
-        } ELSE {
-            LOCAL discT IS absVs*absVs + 2*gLocal*altDelta.
-            IF discT < 0 { SET discT TO 0. }
-            SET tCoastEst TO (-absVs + SQRT(discT)) / gLocal.
-        }
-    }
-    SET tCoastEst TO Clamp(tCoastEst, 12, 180).
-
-    // Horizontal decel available during entry burn
-    LOCAL aHest IS 5.0.
-    IF SHIP:MASS > 0.1 AND SHIP:AVAILABLETHRUST > 0.1 {
-        LOCAL tAcc IS SHIP:AVAILABLETHRUST / SHIP:MASS.
-        SET aHest TO MAX(3.0, tAcc * SIN(ENTRY_LEAN_DEG) * BB_AH_FRAC).
-    }
-
-    // Solve quadratic using PROJECTED dBB
-    LOCAL discV      IS aHest*aHest*tCoastEst*tCoastEst + 2*aHest*dBBproj.
-    LOCAL vCoastCalc IS SQRT(discV) - aHest*tCoastEst.
-    LOCAL vCoastTgt  IS vCoastCalc + BB_TOWARD_MARGIN.
-
-    // Diagnostics - log shows PROJECTED dBB now, not INIT miss
-    SET bbDiagDbb    TO dBBproj.
-    SET bbDiagTcoast TO tCoastEst.
-    SET bbDiagAh     TO aHest.
-    SET bbDiagVcalc  TO vCoastCalc.
-
-    RETURN Clamp(vCoastTgt, BB_TOWARD_MIN, BB_TOWARD_MAX).
 }
 
 FUNCTION fitLine {
@@ -456,11 +329,7 @@ FUNCTION fitLine {
         SET s TO s:SUBSTRING(0, DISP_W).
     }
 
-    UNTIL s:LENGTH >= DISP_W {
-        SET s TO s + " ".
-    }
-
-    RETURN s.
+    RETURN s:PADRIGHT(DISP_W).
 }
 
 FUNCTION sayAt {
@@ -498,14 +367,17 @@ FUNCTION showStatus {
 FUNCTION updateNav {
     LOCAL padPos  IS padGeo:ALTITUDEPOSITION(padAlt).
     LOCAL relVec  IS padPos - SHIP:POSITION.
-    SET navErrN   TO VDOT(relVec, northAxis()).
-    SET navErrE   TO VDOT(relVec, eastAxis()).
+    SET navErrN   TO VDOT(relVec, HEADING(0,0):FOREVECTOR).
+    SET navErrE   TO VDOT(relVec, HEADING(90,0):FOREVECTOR).
     SET navMiss   TO SQRT(navErrN^2 + navErrE^2).
-    SET navVelN   TO VDOT(SHIP:VELOCITY:SURFACE, northAxis()).
-    SET navVelE   TO VDOT(SHIP:VELOCITY:SURFACE, eastAxis()).
+    SET navVelN   TO VDOT(SHIP:VELOCITY:SURFACE, HEADING(0,0):FOREVECTOR).
+    SET navVelE   TO VDOT(SHIP:VELOCITY:SURFACE, HEADING(90,0):FOREVECTOR).
     SET navHs     TO SQRT(MAX(0, SHIP:VELOCITY:SURFACE:MAG^2 - SHIP:VERTICALSPEED^2)).
     SET navPadBrg TO padGeo:HEADING.
-    SET navAgl    TO terrainAGLCalc().
+    LOCAL terrainHeightNow IS SHIP:GEOPOSITION:TERRAINHEIGHT.
+    IF terrainHeightNow < 0 { SET terrainHeightNow TO 0. }
+    SET navAgl    TO SHIP:ALTITUDE - terrainHeightNow.
+    IF navAgl < 0 { SET navAgl TO 0. }
     SET navClearance TO touchClearance().
     SET navSrfSpd TO SHIP:VELOCITY:SURFACE:MAG.
 
@@ -527,14 +399,6 @@ FUNCTION updateNav {
 // ------------------------------------------------------------
 // Logging
 // ------------------------------------------------------------
-FUNCTION logOpen {
-    IF NOT DEBUG_LOG { RETURN. }
-    IF EXISTS(LOG_PATH) { DELETEPATH(LOG_PATH). }
-    LOG "RTLS bullseye - Pad: " + padLatP + " / " + padLngP + " TerrainAlt:" + ROUND(padAlt,2) TO LOG_PATH.
-    LOG "T+sec | Phase | Alt km | VS | HS | Act m | Thr% | Msg" TO LOG_PATH.
-    LOG "----------------------------------------------------------------" TO LOG_PATH.
-}
-
 FUNCTION logLine {
     PARAMETER msg.
     IF NOT DEBUG_LOG { RETURN. }
@@ -590,8 +454,8 @@ FUNCTION setFinAuthority {
 // ------------------------------------------------------------
 FUNCTION rollRefVec {
     PARAMETER lookVec.
-    IF ABS(VDOT(lookVec:NORMALIZED, northAxis())) < 0.92 { RETURN northAxis(). }
-    RETURN eastAxis().
+    IF ABS(VDOT(lookVec:NORMALIZED, HEADING(0,0):FOREVECTOR)) < 0.92 { RETURN HEADING(0,0):FOREVECTOR. }
+    RETURN HEADING(90,0):FOREVECTOR.
 }
 
 // Engine-first descent attitude. On this booster, FOREVECTOR is the
@@ -601,11 +465,11 @@ FUNCTION rollRefVec {
 FUNCTION tailDownDir {
     PARAMETER corrNorth, corrEast, leanDeg.
     LOCAL horizMag IS SQRT(corrNorth^2 + corrEast^2).
-    LOCAL noseVec IS upAxis().
+    LOCAL noseVec IS UP:FOREVECTOR.
 
     IF horizMag > 0.01 AND leanDeg > 0 {
-        LOCAL horizVec IS northAxis()*corrNorth + eastAxis()*corrEast.
-        SET noseVec TO upAxis()*COS(leanDeg) + horizVec:NORMALIZED*SIN(leanDeg).
+        LOCAL horizVec IS HEADING(0,0):FOREVECTOR*corrNorth + HEADING(90,0):FOREVECTOR*corrEast.
+        SET noseVec TO UP:FOREVECTOR*COS(leanDeg) + horizVec:NORMALIZED*SIN(leanDeg).
     }
 
     RETURN LOOKDIRUP(noseVec:NORMALIZED, rollRefVec(noseVec)).
@@ -622,17 +486,17 @@ FUNCTION tailDownDir {
 
 // LOCAL vdVel IS VECDRAW(
 //     { RETURN SHIP:POSITION. },
-//     { RETURN (northAxis()*navVelN + eastAxis()*navVelE) * 18. },
+//     { RETURN (HEADING(0,0):FOREVECTOR*navVelN + HEADING(90,0):FOREVECTOR*navVelE) * 18. },
 //     RED, "VEL", 1.0, TRUE, 0.40, TRUE, FALSE).
 
 // LOCAL vdPadErr IS VECDRAW(
 //     { RETURN SHIP:POSITION. },
-//     { RETURN (northAxis()*navErrN + eastAxis()*navErrE). },
+//     { RETURN (HEADING(0,0):FOREVECTOR*navErrN + HEADING(90,0):FOREVECTOR*navErrE). },
 //     CYAN, "PAD", 1.0, TRUE, 0.38, TRUE, FALSE).
 
 // LOCAL vdSteer IS VECDRAW(
 //     { RETURN SHIP:POSITION. },
-//     { RETURN (northAxis()*dbgSteerN + eastAxis()*dbgSteerE) * 20. },
+//     { RETURN (HEADING(0,0):FOREVECTOR*dbgSteerN + HEADING(90,0):FOREVECTOR*dbgSteerE) * 20. },
 //     YELLOW, "STEER", 1.0, TRUE, 0.40, TRUE, FALSE).
 
 // ------------------------------------------------------------
@@ -644,10 +508,22 @@ CLEARSCREEN.
 RCS ON.
 activateAG(2).
 GEAR OFF.
-logOpen().
+IF DEBUG_LOG {
+    IF EXISTS(LOG_PATH) { DELETEPATH(LOG_PATH). }
+    LOG "RTLS bullseye - Pad: " + padLatP + " / " + padLngP + " TerrainAlt:" + ROUND(padAlt,2) TO LOG_PATH.
+    LOG "T+sec | Phase | Alt km | VS | HS | Act m | Thr% | Msg" TO LOG_PATH.
+    LOG "----------------------------------------------------------------" TO LOG_PATH.
+}
 PRINT fitLine("Loaded RTLS bullseye - debug/display combined") AT (0, 14).
 updateNav().
 IF DEBUG_LOG { logEvent("SCRIPT START terrainAlt:" + ROUND(padAlt,2) + " miss:" + ROUND(navMiss,0)).}
+
+// Steering/throttle are locked once here. The phase loop below only
+// updates these command variables; it does not re-lock controls.
+LOCAL rtlsThrottleCmd IS 0.
+LOCAL rtlsSteeringCmd IS HEADING(navPadBrg, FLIP_PITCH).
+LOCK THROTTLE TO rtlsThrottleCmd.
+LOCK STEERING TO rtlsSteeringCmd.
 
 UNTIL FALSE {
     updateNav().
@@ -660,9 +536,106 @@ UNTIL FALSE {
         SET bestMissAlt TO SHIP:ALTITUDE.
     }
 
+    // ------------------------------------------------------------
+    // Dynamic boostback target computed once during PH_INIT
+    //
+    // Solve for padward velocity at boostback end such that, after a
+    // ballistic coast to entry trigger altitude, the entry burn can
+    // close the remaining horizontal distance while nulling HS within
+    // its decel budget.
+    //
+    // CRITICAL: dBB must be the miss at BOOSTBACK END, not at INIT.
+    // Between INIT and boostback end the ship keeps drifting away
+    // because it has to align (flip) and then kill its away-velocity
+    // (reverse burn). For Falcon-class boosters that drift is on the
+    // order of 3-6 km and was the silent killer of the previous build.
+    //
+    // dBB_proj = navMiss
+    //          + awayNow * tFlipEst                 (drift during flip)
+    //          + awayNow^2 / (2 * aFull)            (drift during reverse)
+    //
+    // Coast time is computed from the PROJECTED altitude and VS at
+    // boostback end, not the current ones, because flip+boostback adds
+    // significant altitude (the thrust is mostly horizontal, so VS
+    // is near-ballistic during that window).
+    //
+    //   dBB_proj = vCoast * tCoast + vCoast^2 / (2 * aH)
+    //   => vCoast = sqrt(aH^2 * tCoast^2 + 2*aH*dBB_proj) - aH*tCoast
+    //
+    // BB_TOWARD_MARGIN is added so we over-boost slightly (entry handles
+    // overshoot better than undershoot).
+    // ------------------------------------------------------------
     // --------------------------------------------------------
     IF phase = PH_INIT {
-        SET bbTargetToward TO computeBoostTarget().
+        LOCAL dBBnow   IS navMiss.
+        LOCAL awayNow  IS MAX(0, -navToward).
+        LOCAL vsNow    IS SHIP:VERTICALSPEED.
+        LOCAL altNow   IS SHIP:ALTITUDE.
+        LOCAL gLocal   IS SHIP:BODY:MU / ((SHIP:BODY:RADIUS + altNow)^2).
+
+        // Full-thrust horizontal decel during REV (thrust is near-
+        // retrograde in the horizontal plane, so use cos(FLIP_PITCH)).
+        LOCAL aFull IS 15.
+        IF SHIP:MASS > 0.1 AND SHIP:AVAILABLETHRUST > 0.1 {
+            SET aFull TO MAX(5, SHIP:AVAILABLETHRUST / SHIP:MASS * COS(FLIP_PITCH)).
+        }
+
+        // Time budget from INIT to end of boostback
+        LOCAL tFlipEst    IS 8.                      // alignment duration
+        LOCAL tReverseEst IS awayNow / aFull.        // full-thrust away-kill
+        LOCAL tSetEst     IS 5.                      // SET/FINE cleanup overhead
+        LOCAL tPreCoast   IS tFlipEst + tReverseEst + tSetEst.
+
+        // Horizontal drift during flip + reverse burn
+        LOCAL driftFlip IS awayNow * tFlipEst.
+        LOCAL driftRev  IS awayNow * awayNow / (2 * aFull).
+        LOCAL dBBproj   IS dBBnow + driftFlip + driftRev.
+
+        // Projected altitude and VS at boostback end (vertical is near-
+        // ballistic during flip+boostback since thrust is near-horizontal)
+        LOCAL vsProj  IS vsNow - gLocal * tPreCoast.
+        LOCAL altProj IS altNow + vsNow * tPreCoast - 0.5 * gLocal * tPreCoast * tPreCoast.
+
+        // Ballistic coast time from boostback end to entry trigger altitude
+        LOCAL altDelta  IS altProj - ENTRY_TRIGGER_ALT.
+        LOCAL tCoastEst IS 60.
+        IF vsProj > 0 {
+            // Ascending after boostback - arc, fall to entry alt
+            LOCAL discT IS vsProj*vsProj + 2*gLocal*altDelta.
+            IF discT < 0 { SET discT TO 0. }
+            SET tCoastEst TO (vsProj + SQRT(discT)) / gLocal.
+        } ELSE {
+            // Already descending
+            LOCAL absVs IS ABS(vsProj).
+            IF altDelta <= 0 {
+                SET tCoastEst TO 4.
+            } ELSE {
+                LOCAL discT IS absVs*absVs + 2*gLocal*altDelta.
+                IF discT < 0 { SET discT TO 0. }
+                SET tCoastEst TO (-absVs + SQRT(discT)) / gLocal.
+            }
+        }
+        SET tCoastEst TO Clamp(tCoastEst, 12, 180).
+
+        // Horizontal decel available during entry burn
+        LOCAL aHest IS 5.0.
+        IF SHIP:MASS > 0.1 AND SHIP:AVAILABLETHRUST > 0.1 {
+            LOCAL tAcc IS SHIP:AVAILABLETHRUST / SHIP:MASS.
+            SET aHest TO MAX(3.0, tAcc * SIN(ENTRY_LEAN_DEG) * BB_AH_FRAC).
+        }
+
+        // Solve quadratic using PROJECTED dBB
+        LOCAL discV      IS aHest*aHest*tCoastEst*tCoastEst + 2*aHest*dBBproj.
+        LOCAL vCoastCalc IS SQRT(discV) - aHest*tCoastEst.
+        LOCAL vCoastTgt  IS vCoastCalc + BB_TOWARD_MARGIN.
+
+        // Diagnostics - log shows PROJECTED dBB now, not INIT miss
+        SET bbDiagDbb    TO dBBproj.
+        SET bbDiagTcoast TO tCoastEst.
+        SET bbDiagAh     TO aHest.
+        SET bbDiagVcalc  TO vCoastCalc.
+
+        SET bbTargetToward TO Clamp(vCoastTgt, BB_TOWARD_MIN, BB_TOWARD_MAX).
         SET phase TO PH_FLIP.
         IF DEBUG_LOG { logEvent(
             "INIT->FLIP miss:" + ROUND(navMiss,0)
@@ -677,8 +650,8 @@ UNTIL FALSE {
 
     // --------------------------------------------------------
     ELSE IF phase = PH_FLIP {
-        LOCK STEERING TO HEADING(navPadBrg, FLIP_PITCH).
-        LOCK THROTTLE TO 0.
+        SET rtlsSteeringCmd TO HEADING(navPadBrg, FLIP_PITCH).
+        SET rtlsThrottleCmd TO 0.
         LOCAL flipErr IS VANG(SHIP:FACING:FOREVECTOR, HEADING(navPadBrg, FLIP_PITCH):FOREVECTOR).
         showStatus("FLIP", "Aligning for boostback", "pitch err:" + ROUND(flipErr,1) + " deg  pad brg:" + ROUND(navPadBrg,1) + "  tgt toward:" + ROUND(bbTargetToward,0) + " m/s").
         IF DEBUG_LOG { logPeriodic("flip err:" + ROUND(flipErr,1) + " brg:" + ROUND(navPadBrg,1)).}
@@ -688,7 +661,11 @@ UNTIL FALSE {
             SET bbMode        TO 0.
             SET bbRevBias     TO 0.
             IF ABS(navCross) >= 4 {
-                SET bbRevBias TO -SignNum(navCross) * MIN(BB_HEADING_MAX, 1.5 + ABS(navCross)*0.08).
+                IF navCross > 0 {
+                    SET bbRevBias TO -MIN(BB_HEADING_MAX, 1.5 + ABS(navCross)*0.08).
+                } ELSE {
+                    SET bbRevBias TO MIN(BB_HEADING_MAX, 1.5 + ABS(navCross)*0.08).
+                }
             }
             SET bbRevHeading TO wrapBrg(navPadBrg + bbRevBias).
             SET bbAimBrg     TO bbRevHeading.
@@ -775,8 +752,8 @@ UNTIL FALSE {
             }
         }
 
-        LOCK STEERING TO HEADING(aimBrg, FLIP_PITCH).
-        LOCK THROTTLE TO thrCmd.
+        SET rtlsSteeringCmd TO HEADING(aimBrg, FLIP_PITCH).
+        SET rtlsThrottleCmd TO thrCmd.
 
         showStatus("BOOSTBACK", "mode:" + modeName + "  aim:" + ROUND(aimBrg,1) + " deg  throttle:" + ROUND(thrCmd*100,0) + "%", "toward:" + ROUND(navToward,0) + "  target:" + ROUND(bbTargetToward,0) + "  cross:" + ROUND(navCross,0) + "  velErr:" + ROUND(velErr,1) + "  " + ewText(navErrE)).
 
@@ -804,9 +781,8 @@ UNTIL FALSE {
         }
 
         IF bbExitReason <> "" {
-            UNLOCK THROTTLE.
-            LOCK THROTTLE TO 0.
-            UNLOCK STEERING.
+            SET rtlsThrottleCmd TO 0.
+            SET rtlsSteeringCmd TO tailDownDir(0, 0, 0).
             SET corrStartTime TO TIME:SECONDS.
             SET corrMode TO 0.
             SET bbAimBrg TO navPadBrg.
@@ -854,8 +830,8 @@ UNTIL FALSE {
             }
         }
 
-        LOCK STEERING TO HEADING(aimBrgC, FLIP_PITCH).
-        LOCK THROTTLE TO thrCorr.
+        SET rtlsSteeringCmd TO HEADING(aimBrgC, FLIP_PITCH).
+        SET rtlsThrottleCmd TO thrCorr.
 
         showStatus("CORRECTIVE", "mode:" + corrName + "  aim:" + ROUND(aimBrgC,1) + " deg  throttle:" + ROUND(thrCorr*100,0) + "%", "toward:" + ROUND(navToward,0) + "  cross:" + ROUND(navCross,0) + "  velErr:" + ROUND(velErrC,1) + "  aimErr:" + ROUND(aimErrC,1) + "  " + ewText(navErrE)).
         IF DEBUG_LOG { logPeriodic("corrective " + corrName + " act:" + ROUND(navMiss,0) + " cross:" + ROUND(navCross,0) + " velErr:" + ROUND(velErrC,1) + " aimErr:" + ROUND(aimErrC,1)).}
@@ -864,16 +840,14 @@ UNTIL FALSE {
            AND corrElapsed >= CORR_ALIGN_MIN_T
            AND ABS(velErrC) <= CORR_ALIGN_VELERR
            AND crossAbsC <= CORR_ALIGN_CROSS {
-            UNLOCK THROTTLE.
-            LOCK THROTTLE TO 0.
-            UNLOCK STEERING.
+            SET rtlsThrottleCmd TO 0.
+            SET rtlsSteeringCmd TO tailDownDir(0, 0, 0).
             SET phase TO PH_COAST.
             IF DEBUG_LOG { logEvent("CORRECTIVE->COAST align solved velErr:" + ROUND(velErrC,1)).}
         }
         ELSE IF corrElapsed > CORR_MAX_TIME {
-            UNLOCK THROTTLE.
-            LOCK THROTTLE TO 0.
-            UNLOCK STEERING.
+            SET rtlsThrottleCmd TO 0.
+            SET rtlsSteeringCmd TO tailDownDir(0, 0, 0).
             SET phase TO PH_COAST.
             IF DEBUG_LOG { logEvent("CORRECTIVE->COAST timeout velErr:" + ROUND(velErrC,1)).}
         }
@@ -881,20 +855,20 @@ UNTIL FALSE {
 
     // --------------------------------------------------------
     ELSE IF phase = PH_COAST {
-        LOCK THROTTLE TO 0.
+        SET rtlsThrottleCmd TO 0.
         // Engine-first coast with gentle velocity-damping trim
         LOCAL coastTgo  IS Clamp(navClearance / MAX(170, ABS(SHIP:VERTICALSPEED)), 10, 28).
         LOCAL coastDesVN IS Clamp((navErrN / MAX(14, coastTgo * 2.2)) - navVelN * 1.25, -8, 8).
         LOCAL coastDesVE IS Clamp((navErrE / MAX(14, coastTgo * 2.2)) - navVelE * 1.25, -10, 10).
         SET dbgSteerN TO coastDesVN.
         SET dbgSteerE TO coastDesVE.
-        LOCAL coastAimVec IS northAxis()*(navErrN + coastDesVN * 90)
-                          + eastAxis()*(navErrE + coastDesVE * 90)
-                          + (-upAxis())*MAX(1, navClearance).
+        LOCAL coastAimVec IS HEADING(0,0):FOREVECTOR*(navErrN + coastDesVN * 90)
+                          + HEADING(90,0):FOREVECTOR*(navErrE + coastDesVE * 90)
+                          + (-UP:FOREVECTOR)*MAX(1, navClearance).
         IF coastAimVec:MAG < 0.01 {
-            SET coastAimVec TO (-upAxis()).
+            SET coastAimVec TO (-UP:FOREVECTOR).
         }
-        LOCK STEERING TO LOOKDIRUP((-coastAimVec):NORMALIZED, rollRefVec((-coastAimVec))).
+        SET rtlsSteeringCmd TO LOOKDIRUP((-coastAimVec):NORMALIZED, rollRefVec((-coastAimVec))).
         RCS ON.
 
         IF NOT coastFinsOut AND (SHIP:ALTITUDE < COAST_FIN_ALT OR SHIP:VERTICALSPEED <= 0) {
@@ -954,7 +928,7 @@ UNTIL FALSE {
         // Throttle is FULL while HS > ENTRY_HS_EXIT; zero after.
 
         LOCAL entryElapsed IS TIME:SECONDS - entryStartTime.
-        LOCAL clrEntry     IS descentClearance().
+        LOCAL clrEntry     IS padClearance().
         LOCAL vsEntryNow   IS SHIP:VERTICALSPEED.
         LOCAL tAccEntry    IS SHIP:AVAILABLETHRUST / MAX(0.1, SHIP:MASS).
         LOCAL aHmax        IS MAX(1, tAccEntry * ENTRY_MAX_SIN).
@@ -1022,8 +996,8 @@ UNTIL FALSE {
             SET thrEntry TO 0.
         }
 
-        LOCK STEERING TO tailDownDir(corrN, corrE, leanEff).
-        LOCK THROTTLE TO thrEntry.
+        SET rtlsSteeringCmd TO tailDownDir(corrN, corrE, leanEff).
+        SET rtlsThrottleCmd TO thrEntry.
         RCS ON.
         IF coastFinsOut { setFinAuthority(26). }
 
@@ -1067,7 +1041,7 @@ UNTIL FALSE {
         }
 
         IF exitReason <> "" {
-            LOCK THROTTLE TO 0.
+            SET rtlsThrottleCmd TO 0.
             SET aeroStartTime TO TIME:SECONDS.
             SET phase TO PH_AERO.
             IF DEBUG_LOG { logEvent("ENTRY->AERO " + exitReason + " alt:" + ROUND(SHIP:ALTITUDE,0) + " " + nsText(navErrN) + " " + ewText(navErrE)).}
@@ -1118,14 +1092,14 @@ UNTIL FALSE {
         SET dbgSteerN TO corrN_A.
         SET dbgSteerE TO corrE_A.
 
-        LOCK STEERING TO tailDownDir(corrN_A, corrE_A, AERO_LEAN_DEG).
-        LOCK THROTTLE TO 0.
+        SET rtlsSteeringCmd TO tailDownDir(corrN_A, corrE_A, AERO_LEAN_DEG).
+        SET rtlsThrottleCmd TO 0.
         RCS ON.
         IF coastFinsOut { setFinAuthority(40). }
 
         // Drop legs low so the impact point is well-defined even
         // though we are crashing.
-        IF descentClearance() < 120 {
+        IF padClearance() < 120 {
             GEAR ON.
         }
 
@@ -1138,7 +1112,7 @@ UNTIL FALSE {
             "aero act:" + ROUND(navMiss,0)
           + " hs:" + ROUND(navHs,1)
           + " vs:" + ROUND(SHIP:VERTICALSPEED,1)
-          + " clr:" + ROUND(descentClearance(),0)
+          + " clr:" + ROUND(padClearance(),0)
           + " corrN:" + ROUND(corrN_A,1)
           + " corrE:" + ROUND(corrE_A,1)
           + " best:" + ROUND(bestMissSeen,0)
@@ -1148,14 +1122,14 @@ UNTIL FALSE {
         // Hand off to landing burn at altitude. Impact detection is
         // kept as a fallback in case landing never engages for some
         // reason (fuel starvation, etc.)
-        IF descentClearance() < LANDING_HANDOFF_CLR {
+        IF padClearance() < LANDING_HANDOFF_CLR {
             SET landingStartTime TO TIME:SECONDS.
             SET phase TO PH_LANDING_BURN.
             IF DEBUG_LOG { logEvent(
                 "AERO->LANDING act:" + ROUND(navMiss,0)
               + " hs:" + ROUND(navHs,1)
               + " vs:" + ROUND(SHIP:VERTICALSPEED,1)
-              + " clr:" + ROUND(descentClearance(),0)
+              + " clr:" + ROUND(padClearance(),0)
               + " " + nsText(navErrN) + " " + ewText(navErrE)
             ).}
         }
@@ -1220,11 +1194,18 @@ UNTIL FALSE {
             LOCAL ignAlt   IS stopDist + LANDING_IGNITE_MARGIN.
 
             // Pre-ignition steering: keep AERO-style retrograde attitude
-            // so the engines are pointed opposite to velocity (nose up-ish).
+            // so the engines are pointed opposite to velocity (nose up-ish),
+            // but keep the AERO pad nudge alive. The log showed AERO had the
+            // booster within ~50 m, then LANDING pre-ignition stopped correcting
+            // that residual error for the next couple kilometers.
             LOCAL corrN_pre IS navVelN.
             LOCAL corrE_pre IS navVelE.
-            LOCK STEERING TO tailDownDir(corrN_pre, corrE_pre, AERO_LEAN_DEG).
-            LOCK THROTTLE TO 0.
+            IF navMiss > 10 {
+                SET corrN_pre TO corrN_pre + Clamp(-navErrN * AERO_POS_K, -AERO_POS_CAP, AERO_POS_CAP).
+                SET corrE_pre TO corrE_pre + Clamp(-navErrE * AERO_POS_K, -AERO_POS_CAP, AERO_POS_CAP).
+            }
+            SET rtlsSteeringCmd TO tailDownDir(corrN_pre, corrE_pre, AERO_LEAN_DEG).
+            SET rtlsThrottleCmd TO 0.
 
             // Ignite when the stopping distance catches up to clearance
             IF clr <= ignAlt {
@@ -1263,7 +1244,7 @@ UNTIL FALSE {
             // command. The old order allowed one final high-lean frame at
             // single-digit clearance, which is exactly what kicked the booster
             // sideways in the latest log.
-            IF clr <= LANDING_EXIT_CLR AND vsDown <= LANDING_EXIT_VS {
+            IF clr <= LANDING_EXIT_CLR AND vsLand < -0.5 AND vsDown <= LANDING_EXIT_VS {
                 LOCAL targetVsSettle IS TOUCH_TARGET_VS.
                 IF clr < TOUCH_LOW_CLR { SET targetVsSettle TO TOUCH_TARGET_VS_LOW. }
                 LOCAL aSettle IS padG + (targetVsSettle - vsLand) * TOUCH_VS_GAIN.
@@ -1272,8 +1253,8 @@ UNTIL FALSE {
 
                 SET dbgSteerN TO 0.
                 SET dbgSteerE TO 0.
-                LOCK STEERING TO tailDownDir(0, 0, 0).
-                LOCK THROTTLE TO thrSettle.
+                SET rtlsSteeringCmd TO tailDownDir(0, 0, 0).
+                SET rtlsThrottleCmd TO thrSettle.
                 RCS ON.
 
                 SET touchStartTime TO TIME:SECONDS.
@@ -1296,17 +1277,96 @@ UNTIL FALSE {
                 LOCAL aVertReq IS padG + profileAccel.
                 IF aVertReq < 0 { SET aVertReq TO 0. }
 
-                // tgo estimate: time to ground at current/profile average downspeed
+                // Terminal gate: below LANDING_GATE_CLR, stop planning to be slow
+                // at the ground. Be slow by the TOUCHDOWN handoff altitude. This
+                // catches the case where we pass 40m still doing ~-25 m/s and
+                // bounce before TOUCHDOWN has room to settle.
+                IF clr < LANDING_GATE_CLR AND vsDown > LANDING_EXIT_VS {
+                    LOCAL gateDist IS MAX(LANDING_GATE_MARGIN, clr - LANDING_EXIT_CLR).
+                    LOCAL gateAccel IS (vsDown * vsDown - LANDING_EXIT_VS * LANDING_EXIT_VS) / (2 * gateDist).
+                    LOCAL aGateReq IS padG + gateAccel.
+                    IF aGateReq > aVertReq { SET aVertReq TO aGateReq. }
+                }
+
+                // Vertical tgo estimate: time to ground at current/profile average downspeed.
                 LOCAL tgoLand IS Clamp(
                     2 * clrFloor / MAX(10, vsDown + targetDown),
                     LANDING_TGO_MIN,
                     LANDING_TGO_MAX
                 ).
 
-                // ZEM/ZEV horizontal acceleration request
-                LOCAL tgo2 IS tgoLand * tgoLand.
-                LOCAL reqAN IS (6 / tgo2) * navErrN - (8 / tgoLand) * navVelN.
-                LOCAL reqAE IS (6 / tgo2) * navErrE - (8 / tgoLand) * navVelE.
+                // Horizontal guidance split:
+                //   * Far miss: use the ZEM/ZEV controller to recover.
+                //   * Captured miss: AERO has the pad nearly solved. Use an altitude-
+                //     tapered precision pull: stronger high, velocity-damped low.
+                LOCAL tgoHoriz IS tgoLand.
+                LOCAL reqAN IS 0.
+                LOCAL reqAE IS 0.
+                LOCAL captureLanding IS FALSE.
+                LOCAL captureLeanCap IS LANDING_CAPTURE_LEAN_CAP_DEG.
+
+                IF navMiss <= LANDING_CAPTURE_MISS {
+                    SET captureLanding TO TRUE.
+                    SET tgoHoriz TO Clamp(tgoLand, 3, 10).
+
+                    // Precision capture: the v8 log showed LANDING entering at
+                    // about 88m miss and then only bleeding that down to about
+                    // 48m because the capture controller had almost zero lean
+                    // for the last kilometer. Use stronger position pull while
+                    // high, then taper it out before touchdown so we do not
+                    // build lateral speed on the legs.
+                    LOCAL capPosK IS LANDING_CAPTURE_POS_K.
+                    LOCAL capPosCap IS LANDING_CAPTURE_POS_CAP.
+                    LOCAL capVelK IS LANDING_CAPTURE_VEL_K.
+                    LOCAL capVelCap IS LANDING_CAPTURE_VEL_CAP.
+                    IF clr > 600 {
+                        SET capPosK TO 0.040.
+                        SET capPosCap TO 3.0.
+                        SET capVelK TO 0.75.
+                        SET capVelCap TO 2.2.
+                        SET captureLeanCap TO 12.
+                    } ELSE IF clr > 200 {
+                        SET capPosK TO 0.035.
+                        SET capPosCap TO 2.4.
+                        SET capVelK TO 0.90.
+                        SET capVelCap TO 2.2.
+                        SET captureLeanCap TO 10.
+                    } ELSE IF clr > 70 {
+                        SET capPosK TO 0.024.
+                        SET capPosCap TO 1.4.
+                        SET capVelK TO 1.15.
+                        SET capVelCap TO 2.4.
+                        SET captureLeanCap TO 6.
+                    } ELSE {
+                        SET capPosK TO 0.014.
+                        SET capPosCap TO 0.7.
+                        SET capVelK TO 1.45.
+                        SET capVelCap TO 2.8.
+                        SET captureLeanCap TO 3.
+                    }
+
+                    SET reqAN TO Clamp(navErrN * capPosK, -capPosCap, capPosCap)
+                              + Clamp(-navVelN * capVelK, -capVelCap, capVelCap).
+                    SET reqAE TO Clamp(navErrE * capPosK, -capPosCap, capPosCap)
+                              + Clamp(-navVelE * capVelK, -capVelCap, capVelCap).
+                } ELSE {
+                    // ZEM/ZEV should not wait until the last 2 km. Use a slightly
+                    // longer horizon than the vertical flare while high, then tighten
+                    // it near the pad. This brakes overshoot earlier instead of
+                    // chasing back over the pad at low altitude.
+                    IF clr > 1800 {
+                        SET tgoHoriz TO Clamp(navMiss / MAX(35, navHs), 8, LANDING_TGO_MAX).
+                    } ELSE IF clr > 600 {
+                        SET tgoHoriz TO Clamp(navMiss / MAX(25, navHs), 5, 11).
+                    } ELSE {
+                        SET tgoHoriz TO Clamp(tgoLand, 3, 8).
+                    }
+
+                    LOCAL tgo2 IS tgoHoriz * tgoHoriz.
+                    SET reqAN TO (6 / tgo2) * navErrN - (8 / tgoHoriz) * navVelN.
+                    SET reqAE TO (6 / tgo2) * navErrE - (8 / tgoHoriz) * navVelE.
+                }
+
                 LOCAL reqAHmag IS SQRT(reqAN * reqAN + reqAE * reqAE).
 
                 // Once we are close enough in the final meters, stop chasing
@@ -1336,6 +1396,9 @@ UNTIL FALSE {
                 // acceleration request, not just the attitude, so clipping lean
                 // does not accidentally increase vertical thrust and bounce.
                 LOCAL landingLeanCap IS LANDING_LEAN_CAP_DEG.
+                IF captureLanding {
+                    SET landingLeanCap TO MIN(landingLeanCap, captureLeanCap).
+                }
                 IF clr < LANDING_FINAL_LEAN_CLR {
                     SET landingLeanCap TO MIN(landingLeanCap, LANDING_FINAL_LEAN_CAP_DEG).
                 }
@@ -1372,8 +1435,8 @@ UNTIL FALSE {
                 SET dbgSteerN TO corrN.
                 SET dbgSteerE TO corrE.
 
-                LOCK STEERING TO tailDownDir(corrN, corrE, leanLand).
-                LOCK THROTTLE TO thrLand.
+                SET rtlsSteeringCmd TO tailDownDir(corrN, corrE, leanLand).
+                SET rtlsThrottleCmd TO thrLand.
                 RCS ON.
 
                 // 3-engine -> 1-engine transition. If one engine alone could
@@ -1407,7 +1470,7 @@ UNTIL FALSE {
 
                 showStatus(
                     "LANDING",
-                    "thr:" + ROUND(thrLand*100,0) + "%  lean:" + ROUND(leanLand,1) + "  tgo:" + ROUND(tgoLand,1) + "  solo:" + landingSoloMode,
+                    "thr:" + ROUND(thrLand*100,0) + "%  lean:" + ROUND(leanLand,1) + "  tgoV/H:" + ROUND(tgoLand,1) + "/" + ROUND(tgoHoriz,1) + "  solo:" + landingSoloMode,
                     "clr:" + ROUND(clr,0) + "  vs:" + ROUND(vsLand,1) + "  hs:" + ROUND(navHs,1) + "  miss:" + ROUND(navMiss,0)
                 ).
                 IF DEBUG_LOG { logPeriodic(
@@ -1419,7 +1482,9 @@ UNTIL FALSE {
                   + " lean:" + ROUND(leanLand,1)
                   + " aV:" + ROUND(aVertReq,1)
                   + " aH:" + ROUND(reqAHmag,1)
+                  + " tgoH:" + ROUND(tgoHoriz,1)
                   + " tm:" + ROUND(tm,1)
+                  + " cap:" + captureLanding
                   + " solo:" + landingSoloMode
                   + " " + nsText(navErrN) + " " + ewText(navErrE)
                 ).}
@@ -1463,8 +1528,8 @@ UNTIL FALSE {
         // Landed detection first, before any new throttle command. This avoids
         // leaving one more nonzero-throttle frame after contact.
         IF SHIP:STATUS = "LANDED" OR SHIP:STATUS = "SPLASHED" {
-            LOCK THROTTLE TO 0.
-            LOCK STEERING TO tailDownDir(0, 0, 0).
+            SET rtlsThrottleCmd TO 0.
+            SET rtlsSteeringCmd TO tailDownDir(0, 0, 0).
             RCS OFF.
             SAS OFF.
             BRAKES ON.
@@ -1482,8 +1547,8 @@ UNTIL FALSE {
         // small post-contact hop. Wait until bottom clearance is essentially
         // gone, then shut down immediately.
         ELSE IF clr < TOUCH_SOFT_CLR AND ABS(vsTouch) < TOUCH_SOFT_VS AND navHs < TOUCH_SOFT_HS {
-            LOCK THROTTLE TO 0.
-            LOCK STEERING TO tailDownDir(0, 0, 0).
+            SET rtlsThrottleCmd TO 0.
+            SET rtlsSteeringCmd TO tailDownDir(0, 0, 0).
             RCS OFF.
             SAS OFF.
             BRAKES ON.
@@ -1551,8 +1616,8 @@ UNTIL FALSE {
             SET dbgSteerN TO corrN.
             SET dbgSteerE TO corrE.
 
-            LOCK STEERING TO tailDownDir(corrN, corrE, leanTouch).
-            LOCK THROTTLE TO thrTouch.
+            SET rtlsSteeringCmd TO tailDownDir(corrN, corrE, leanTouch).
+            SET rtlsThrottleCmd TO thrTouch.
             IF touchCommitMode {
                 RCS OFF.
             } ELSE {
@@ -1578,7 +1643,7 @@ UNTIL FALSE {
 
             // Fuel-out fallback
             IF SHIP:AVAILABLETHRUST <= 0.01 {
-                LOCK THROTTLE TO 0.
+                SET rtlsThrottleCmd TO 0.
                 RCS OFF.
                 SET phase TO PH_IMPACT.
                 IF DEBUG_LOG { logEvent(
@@ -1593,8 +1658,8 @@ UNTIL FALSE {
     // --------------------------------------------------------
     ELSE IF phase = PH_IMPACT {
         // Full shutdown: engines, RCS, SAS, steering, throttle.
-        LOCK THROTTLE TO 0.
-        UNLOCK STEERING.
+        SET rtlsThrottleCmd TO 0.
+        SET rtlsSteeringCmd TO tailDownDir(0, 0, 0).
         RCS OFF.
         SAS OFF.
         BRAKES ON.
@@ -1606,11 +1671,13 @@ UNTIL FALSE {
         BREAK.
     }
 
-    WAIT 0.05.
+    WAIT 0.01.
 }
 
+SET rtlsThrottleCmd TO 0.
+SET rtlsSteeringCmd TO tailDownDir(0, 0, 0).
+WAIT 0.01.
 UNLOCK STEERING.
 UNLOCK THROTTLE.
-LOCK THROTTLE TO 0.
 RCS OFF.
 IF DEBUG_LOG { logEvent("SCRIPT END final miss:" + ROUND(navMiss,0) + " best miss seen:" + ROUND(bestMissSeen,0) + " @ " + ROUND(bestMissAlt,0) + "m").}
