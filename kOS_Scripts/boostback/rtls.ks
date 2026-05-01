@@ -8,29 +8,13 @@
 // Phases:
 //   INIT -> FLIP -> BOOSTBACK -> CORRECTIVE -> COAST -> ENTRY -> AERO -> LANDING -> TOUCHDOWN -> IMPACT
 //
-// What changed vs the previous flat_geometry build:
-//   * Boostback target toward velocity is now DYNAMIC: at INIT we
-//     solve the quadratic
-//         dBB = vCoast * tCoast + vCoast^2 / (2 * aH)
-//     for vCoast using current navMiss, a ballistic estimate of
-//     coast time to entry trigger altitude, and the entry burn's
-//     horizontal decel budget from current thrust/mass. A small
-//     over-boost margin is added because entry handles overshoot
-//     better than undershoot. Previous fixed value of 117 (and
-//     my earlier bad suggestion of 85) are gone.
-//   * Entry burn no longer exits on MAX_TIME at altitude. It exits
-//     only when (navMiss < ENTRY_MISS_EXIT AND navHs < ENTRY_HS_EXIT)
-//     OR the safety altitude floor is reached. MAX_TIME is kept only
-//     as a hard runaway guard.
-//   * Entry guidance uses err/tgo ZEM-style feedforward without the
-//     previous -navVel * k damping term that was fighting the
-//     position closure term.
-//   * AERO is now pure retrograde on N/S (corr = -navVel) with a
-//     small east-only position nudge, matching the earlier build
-//     that produced 36-80 m accuracy.
-//   * Dead TERM_* / landingThrottle / rawLandingThrottle code path
-//     and the undefined aeroKillHS / bestMiss block in AERO have
-//     been removed.
+// Design notes:
+//   * Controls are locked once before the phase loop; the loop only updates
+//     throttle and steering command variables.
+//   * Entry and AERO solve the lateral approach before powered landing.
+//   * LANDING uses predicted miss and ZEM/ZEV-style capture while preserving
+//     vertical thrust margin for the hoverslam.
+//   * TOUCHDOWN is a short settle/cutoff phase, not a lateral chase phase.
 //
 // ============================================================
 
@@ -42,7 +26,7 @@ PARAMETER padLngP IS -74.5577.
 // ------------------------------------------------------------
 // Constants
 // ------------------------------------------------------------
-// Debug logging. Set DEBUG_LOG to FALSE to disable file logging.
+// Debug logging. TRUE generates 0:/rtls_log.txt for post-flight review.
 LOCAL DEBUG_LOG          IS FALSE.
 LOCAL LOG_PATH           IS "0:/rtls_log.txt".
 LOCAL LOG_DT             IS 1.5.
@@ -83,9 +67,8 @@ LOCAL ENTRY_MAX_TIME     IS 20.       // tight runaway guard; typical burn 8-14s
 LOCAL ENTRY_MISS_EXIT    IS 250.      // "centered" fallback exit (rarely needed)
 LOCAL ENTRY_HS_EXIT      IS 35.       // HS braked enough for AERO to handle.
 LOCAL ENTRY_CENTER_PRED_EXIT IS 500.   // do not drop engines just because current miss crosses pad; predicted miss must also be reasonable
-                                      // Tighter (e.g. <5) would chase zero-
-                                      // velocity-at-pad and oscillate, burning
-                                      // fuel and bleeding VS to near-hover.
+                                      // Tighter values can chase zero-velocity-at-pad and oscillate,
+                                      // wasting fuel and bleeding VS toward hover.
 LOCAL ENTRY_ALT_FLOOR    IS 3500.     // safety bail altitude
 LOCAL ENTRY_MAX_SIN      IS 0.52.     // sin(31 deg) - lean cap; at this angle
                                       // net vertical accel is +6 m/s^2 up (fast
@@ -249,8 +232,7 @@ LOCAL navAlign           IS 0.
 LOCAL dbgSteerN          IS 0.
 LOCAL dbgSteerE          IS 0.
 
-// Diagnostic-only landing prediction fields. These are logged only;
-// they are not used by guidance decisions in this build.
+// Landing prediction fields used by guidance and logging.
 LOCAL dbgTTouch          IS 0.
 LOCAL dbgPredN           IS 0.
 LOCAL dbgPredE           IS 0.
@@ -1197,7 +1179,7 @@ UNTIL FALSE {
         // to 1 engine for final descent.
         //
         // Phase structure:
-        //   1. Pre-ignition: configure 3-engine mode (AG3), fall
+        //   1. Pre-ignition: remain in 3-engine mode from startup (AG2), fall
         //      engines-first, compute stopping distance live. Ignite
         //      when stop_dist + margin >= clearance.
         //   2. Ignited (3 engines): throttle controls vertical decel,
@@ -1518,9 +1500,9 @@ UNTIL FALSE {
                 // hold the required vertical decel at a reasonable throttle,
                 // drop to one. We estimate 1-engine capability by scaling
                 // the current measured capability down by the engine count
-                // ratio.
+                // ratio. The current mode is three engines; AG3 switches to one engine.
                 IF NOT landingSoloMode AND elapsedLand > 1.0 AND vsDown < LANDING_SOLO_VS_MAX {
-                    LOCAL tmSolo IS tm / 3.   // assumes AG3 gave us 3x the solo thrust
+                    LOCAL tmSolo IS tm / 3.   // estimate solo capability from current 3-engine thrust
                     LOCAL thrSoloProj IS 1.0.
                     IF tmSolo > 0.1 {
                         SET thrSoloProj TO aTotal / tmSolo.
