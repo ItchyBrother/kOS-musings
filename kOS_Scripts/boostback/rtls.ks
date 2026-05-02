@@ -1,5 +1,5 @@
 // ============================================================
-// rtls.ks  (RTLS with accuracy-recovered fast landing profile)
+// rtls.ks  (RTLS bullseye with accuracy-recovered fast landing profile)
 //
 // Proof-of-geometry RTLS with terminal hoverslam/settle. Entry and AERO
 // still do the heavy precision work; the landing burn should preserve the
@@ -8,13 +8,29 @@
 // Phases:
 //   INIT -> FLIP -> BOOSTBACK -> CORRECTIVE -> COAST -> ENTRY -> AERO -> LANDING -> TOUCHDOWN -> IMPACT
 //
-// Design notes:
-//   * Controls are locked once before the phase loop; the loop only updates
-//     throttle and steering command variables.
-//   * Entry and AERO solve the lateral approach before powered landing.
-//   * LANDING uses predicted miss and ZEM/ZEV-style capture while preserving
-//     vertical thrust margin for the hoverslam.
-//   * TOUCHDOWN is a short settle/cutoff phase, not a lateral chase phase.
+// What changed vs the previous flat_geometry build:
+//   * Boostback target toward velocity is now DYNAMIC: at INIT we
+//     solve the quadratic
+//         dBB = vCoast * tCoast + vCoast^2 / (2 * aH)
+//     for vCoast using current navMiss, a ballistic estimate of
+//     coast time to entry trigger altitude, and the entry burn's
+//     horizontal decel budget from current thrust/mass. A small
+//     over-boost margin is added because entry handles overshoot
+//     better than undershoot. Previous fixed value of 117 (and
+//     my earlier bad suggestion of 85) are gone.
+//   * Entry burn no longer exits on MAX_TIME at altitude. It exits
+//     only when (navMiss < ENTRY_MISS_EXIT AND navHs < ENTRY_HS_EXIT)
+//     OR the safety altitude floor is reached. MAX_TIME is kept only
+//     as a hard runaway guard.
+//   * Entry guidance uses err/tgo ZEM-style feedforward without the
+//     previous -navVel * k damping term that was fighting the
+//     position closure term.
+//   * AERO is now pure retrograde on N/S (corr = -navVel) with a
+//     small east-only position nudge, matching the earlier build
+//     that produced 36-80 m accuracy.
+//   * Dead TERM_* / landingThrottle / rawLandingThrottle code path
+//     and the undefined aeroKillHS / bestMiss block in AERO have
+//     been removed.
 //
 // ============================================================
 
@@ -26,8 +42,8 @@ PARAMETER padLngP IS -74.5577.
 // ------------------------------------------------------------
 // Constants
 // ------------------------------------------------------------
-// Debug logging. TRUE generates 0:/rtls_log.txt for post-flight review.
-LOCAL DEBUG_LOG          IS FALSE.
+// Debug logging. Set DEBUG_LOG to FALSE to disable file logging.
+LOCAL DEBUG_LOG          IS TRUE.
 LOCAL LOG_PATH           IS "0:/rtls_log.txt".
 LOCAL LOG_DT             IS 1.5.
 
@@ -67,8 +83,9 @@ LOCAL ENTRY_MAX_TIME     IS 20.       // tight runaway guard; typical burn 8-14s
 LOCAL ENTRY_MISS_EXIT    IS 250.      // "centered" fallback exit (rarely needed)
 LOCAL ENTRY_HS_EXIT      IS 35.       // HS braked enough for AERO to handle.
 LOCAL ENTRY_CENTER_PRED_EXIT IS 500.   // do not drop engines just because current miss crosses pad; predicted miss must also be reasonable
-                                      // Tighter values can chase zero-velocity-at-pad and oscillate,
-                                      // wasting fuel and bleeding VS toward hover.
+                                      // Tighter (e.g. <5) would chase zero-
+                                      // velocity-at-pad and oscillate, burning
+                                      // fuel and bleeding VS to near-hover.
 LOCAL ENTRY_ALT_FLOOR    IS 3500.     // safety bail altitude
 LOCAL ENTRY_MAX_SIN      IS 0.52.     // sin(31 deg) - lean cap; at this angle
                                       // net vertical accel is +6 m/s^2 up (fast
@@ -80,6 +97,23 @@ LOCAL ENTRY_MAX_SIN      IS 0.52.     // sin(31 deg) - lean cap; at this angle
 LOCAL ENTRY_MIN_LEAN_DEG IS 0.5.      // avoid noise at near-zero lean
 LOCAL ENTRY_LEAN_DEG     IS 14.       // reference lean for boostback planning
                                       // (PEG entry computes lean dynamically)
+
+// Downrange/no-boostback range trim. This branch is gated by the
+// INIT boostback solve, so normal RTLS pads continue using the
+// proven short ENTRY behavior. Important: the simple pAct predictor
+// is ballistic and does not include the grid-fin drag that will bleed
+// downrange speed during AERO. For downrange landings we intentionally
+// hand AERO a long-biased pAct instead of driving pAct to zero in ENTRY.
+LOCAL DOWNRANGE_VCALC_MIN         IS 220.   // only engage when unclamped vCalc says target is far downrange
+LOCAL DOWNRANGE_ENTRY_TRIGGER_ALT IS 35000. // start no earlier than normal ENTRY
+LOCAL DOWNRANGE_ENTRY_VS_TRIGGER  IS -300.  // wait until descent is committed
+LOCAL DOWNRANGE_ENTRY_MAX_TIME    IS 26.    // slight extension over normal ENTRY, but not a long braking burn
+LOCAL DOWNRANGE_ENTRY_MIN_BURN    IS 8.     // avoid exiting before ENTRY has actually shaped the trajectory
+LOCAL DOWNRANGE_AERO_PRED_TARGET  IS 20900. // small v16 increase after v15 landed ~145m short
+LOCAL DOWNRANGE_ENTRY_ALT_FLOOR   IS 12000. // safety floor; powered trim must end well before landing burn
+LOCAL DOWNRANGE_TGO_MIN           IS 6.
+LOCAL DOWNRANGE_TGO_MAX           IS 22.
+LOCAL DOWNRANGE_PAD_ALT           IS 30.    // Default Downrange Altitude.
 
 // Aero (fin-driven, sign inverted from ENTRY)
 LOCAL AERO_LEAN_DEG      IS 9.
@@ -208,6 +242,7 @@ LOCAL touchStartTime     IS 0.
 LOCAL touchCommitMode    IS FALSE.
 LOCAL bestMissSeen       IS 99999.
 LOCAL bestMissAlt        IS 0.
+LOCAL downrangeMode      IS FALSE.
 
 // Boostback target diagnostic values (computed inline during PH_INIT)
 LOCAL bbDiagDbb          IS 0.
@@ -232,7 +267,8 @@ LOCAL navAlign           IS 0.
 LOCAL dbgSteerN          IS 0.
 LOCAL dbgSteerE          IS 0.
 
-// Landing prediction fields used by guidance and logging.
+// Landing prediction fields. These are logged and used by the
+// prediction-aware ENTRY/AERO/LANDING guidance gates.
 LOCAL dbgTTouch          IS 0.
 LOCAL dbgPredN           IS 0.
 LOCAL dbgPredE           IS 0.
@@ -253,7 +289,11 @@ FUNCTION Clamp {
 
 
 FUNCTION padClearance {
-    LOCAL clr IS SHIP:ALTITUDE - padAlt.
+    LOCAL usePadAlt IS padAlt.
+    IF downrangeMode{
+        SET usePadAlt TO DOWNRANGE_PAD_ALT.
+    }
+    LOCAL clr IS SHIP:ALTITUDE - usepadAlt.
     IF clr < 0 { RETURN 0. }
     RETURN clr.
 }
@@ -347,7 +387,7 @@ FUNCTION showStatus {
     IF DEBUG_LOG { SET dbgTxt TO "ON". }
 
     sayAt(0, DISP_BAR).
-    sayAt(1, "RTLS BULLSEYE  PH:" + title + "  DBG:" + dbgTxt).
+    sayAt(1, "RTLS PH:" + title + "  DBG:" + dbgTxt).
     sayAt(2, "ALT:" + ROUND(SHIP:ALTITUDE/1000,2) + "km CLR:" + ROUND(navClearance,0) + "m VS:" + ROUND(SHIP:VERTICALSPEED,1)).
     sayAt(3, "HS:" + ROUND(navHs,1) + "m/s MISS:" + ROUND(navMiss,0) + "m BEST:" + ROUND(bestMissSeen,0) + "m").
     sayAt(4, "PAD " + nsText(navErrN) + " " + ewText(navErrE) + " BRG:" + ROUND(navPadBrg,1)).
@@ -655,6 +695,17 @@ UNTIL FALSE {
         SET bbDiagVcalc  TO vCoastCalc.
 
         SET bbTargetToward TO Clamp(vCoastTgt, BB_TOWARD_MIN, BB_TOWARD_MAX).
+
+        // If the unconstrained solver says the target wants far more
+        // padward velocity than RTLS boostback allows, and we are already
+        // moving downrange faster than the capped target, do not change
+        // boostback. Instead, mark this as a no-boostback/downrange case
+        // and let ENTRY start earlier and guide against predicted miss.
+        SET downrangeMode TO FALSE.
+        IF bbDiagVcalc > DOWNRANGE_VCALC_MIN AND navToward > bbTargetToward + 50 {
+            SET downrangeMode TO TRUE.
+        }
+
         SET phase TO PH_FLIP.
         IF DEBUG_LOG { logEvent(
             "INIT->FLIP miss:" + ROUND(navMiss,0)
@@ -664,6 +715,7 @@ UNTIL FALSE {
           + " aH:" + ROUND(bbDiagAh,2)
           + " vCalc:" + ROUND(bbDiagVcalc,1)
           + " tgtToward:" + ROUND(bbTargetToward,1)
+          + " downrange:" + downrangeMode
         ).}
     }
 
@@ -902,10 +954,17 @@ UNTIL FALSE {
         showStatus("COAST", "Engine-first to LZ + trim", "fins:" + coastFinsOut + "  apo seen:" + coastApoSeen + "  pad brg:" + ROUND(navPadBrg,1)).
         IF DEBUG_LOG { logPeriodic("coast act:" + ROUND(navMiss,0) + " hs:" + ROUND(navHs,0) + " desV:" + ROUND(coastDesVN,0) + "/" + ROUND(coastDesVE,0) + " " + nsText(navErrN) + " " + ewText(navErrE)).}
 
-        IF coastApoSeen AND SHIP:ALTITUDE < ENTRY_TRIGGER_ALT AND SHIP:VERTICALSPEED < -220 {
+        LOCAL entryTriggerAltNow IS ENTRY_TRIGGER_ALT.
+        LOCAL entryVsTriggerNow IS -220.
+        IF downrangeMode {
+            SET entryTriggerAltNow TO DOWNRANGE_ENTRY_TRIGGER_ALT.
+            SET entryVsTriggerNow TO DOWNRANGE_ENTRY_VS_TRIGGER.
+        }
+
+        IF coastApoSeen AND SHIP:ALTITUDE < entryTriggerAltNow AND SHIP:VERTICALSPEED < entryVsTriggerNow {
             SET entryStartTime TO TIME:SECONDS.
             SET phase TO PH_ENTRY.
-            IF DEBUG_LOG { logEvent("COAST->ENTRY alt:" + ROUND(SHIP:ALTITUDE,0) + " spd:" + ROUND(navSrfSpd,0) + " act:" + ROUND(navMiss,0) + " " + nsText(navErrN) + " " + ewText(navErrE)).}
+            IF DEBUG_LOG { logEvent("COAST->ENTRY alt:" + ROUND(SHIP:ALTITUDE,0) + " spd:" + ROUND(navSrfSpd,0) + " act:" + ROUND(navMiss,0) + " downrange:" + downrangeMode + " " + nsText(navErrN) + " " + ewText(navErrE)).}
         }
     }
 
@@ -952,16 +1011,36 @@ UNTIL FALSE {
         LOCAL tAccEntry    IS SHIP:AVAILABLETHRUST / MAX(0.1, SHIP:MASS).
         LOCAL aHmax        IS MAX(1, tAccEntry * ENTRY_MAX_SIN).
 
-        // tgo selection - longer of kinematic and braking time
+        // tgo selection - longer of kinematic and braking time.
+        // Normal RTLS and downrange both use current pad error here.
+        // v14 tried to drive predicted touchdown miss directly to zero,
+        // but pAct is a ballistic estimate and does not include the drag
+        // AERO will add later. That made the downrange case land short.
+        // So downrange gets only a slightly wider tgo window, then exits
+        // when pAct has a deliberate long bias for AERO to bleed off.
+        LOCAL entryErrN IS navErrN.
+        LOCAL entryErrE IS navErrE.
+        LOCAL tgoMinNow IS 6.
+        LOCAL tgoMaxNow IS 20.
+
+        IF downrangeMode {
+            SET tgoMinNow TO DOWNRANGE_TGO_MIN.
+            SET tgoMaxNow TO DOWNRANGE_TGO_MAX.
+        }
+
+        LOCAL entryErrMag IS SQRT(entryErrN * entryErrN + entryErrE * entryErrE).
         LOCAL tgoMiss  IS 15.
-        IF navHs > 10 { SET tgoMiss TO navMiss / MAX(20, navHs). }
+        IF navHs > 10 { SET tgoMiss TO entryErrMag / MAX(20, navHs). }
         LOCAL tgoBrake IS navHs / aHmax.
-        LOCAL tgoEntry IS Clamp(MAX(tgoMiss, tgoBrake), 6, 20).
+        LOCAL tgoEntry IS Clamp(MAX(tgoMiss, tgoBrake), tgoMinNow, tgoMaxNow).
+        // Do not stretch tgo toward dbgTTouch in downrange mode. That
+        // value is useful for logging, but as a control horizon it ignores
+        // the drag AERO will add and caused v14 to over-trim the trajectory.
 
         // ZEM/ZEV required acceleration
         LOCAL tgo2   IS tgoEntry * tgoEntry.
-        LOCAL reqAN  IS (6 / tgo2) * navErrN - (8 / tgoEntry) * navVelN.
-        LOCAL reqAE  IS (6 / tgo2) * navErrE - (8 / tgoEntry) * navVelE.
+        LOCAL reqAN  IS (6 / tgo2) * entryErrN - (8 / tgoEntry) * navVelN.
+        LOCAL reqAE  IS (6 / tgo2) * entryErrE - (8 / tgoEntry) * navVelE.
         LOCAL reqAmag IS SQRT(reqAN * reqAN + reqAE * reqAE).
 
         // Required sine of lean angle (at full throttle)
@@ -1023,7 +1102,7 @@ UNTIL FALSE {
         showStatus(
             "ENTRY",
             "tgo:" + ROUND(tgoEntry,1) + "  reqA N/E:" + ROUND(reqAN,1) + "/" + ROUND(reqAE,1) + "  lean:" + ROUND(leanEff,1) + "  thr:" + ROUND(thrEntry*100,0) + "%",
-            "miss:" + ROUND(navMiss,0) + "  hs:" + ROUND(navHs,1) + "  vs:" + ROUND(vsEntryNow,0) + "  best:" + ROUND(bestMissSeen,0) + "  elapsed:" + ROUND(entryElapsed,1)
+            "miss:" + ROUND(navMiss,0) + "  pAct:" + ROUND(dbgPredMiss,0) + "  hs:" + ROUND(navHs,1) + "  dnR:" + downrangeMode + "  elapsed:" + ROUND(entryElapsed,1)
         ).
         IF DEBUG_LOG { logPeriodic(
             "entry alt:" + ROUND(SHIP:ALTITUDE,0)
@@ -1033,6 +1112,9 @@ UNTIL FALSE {
           + " thr:" + ROUND(thrEntry*100,0)
           + " lean:" + ROUND(leanEff,1)
           + " tgo:" + ROUND(tgoEntry,1)
+          + " dnR:" + downrangeMode
+          + " eN:" + ROUND(entryErrN,0)
+          + " eE:" + ROUND(entryErrE,0)
           + " reqAN:" + ROUND(reqAN,1)
           + " reqAE:" + ROUND(reqAE,1)
           + " corrN:" + ROUND(corrN,1)
@@ -1040,24 +1122,36 @@ UNTIL FALSE {
           + " " + nsText(navErrN) + " " + ewText(navErrE)
         ).}
 
-        // Exit conditions. Primary exit is HS braked below ENTRY_HS_EXIT;
-        // everything else is a safety/fallback.
+        // Exit conditions. Normal RTLS keeps the proven short ENTRY.
+        // Downrange mode exits with a deliberate long-biased pAct. AERO
+        // then bleeds that off with fins and drag. Driving pAct near zero
+        // before AERO caused the v14 short landing.
         LOCAL exitReason IS "".
-        IF navHs < ENTRY_HS_EXIT AND entryElapsed > ENTRY_MIN_TIME {
+        LOCAL entryMaxTimeNow IS ENTRY_MAX_TIME.
+        LOCAL entryAltFloorNow IS ENTRY_ALT_FLOOR.
+        IF downrangeMode {
+            SET entryMaxTimeNow TO DOWNRANGE_ENTRY_MAX_TIME.
+            SET entryAltFloorNow TO DOWNRANGE_ENTRY_ALT_FLOOR.
+        }
+
+        IF downrangeMode AND dbgPredMiss > DOWNRANGE_AERO_PRED_TARGET AND entryElapsed > DOWNRANGE_ENTRY_MIN_BURN {
+            SET exitReason TO "downrange aero-bias pAct:" + ROUND(dbgPredMiss,0) + " hs:" + ROUND(navHs,1).
+        }
+        ELSE IF NOT downrangeMode AND navHs < ENTRY_HS_EXIT AND entryElapsed > ENTRY_MIN_TIME {
             SET exitReason TO "HS braked miss:" + ROUND(navMiss,0) + " hs:" + ROUND(navHs,1).
         }
-        ELSE IF navMiss < ENTRY_MISS_EXIT AND dbgPredMiss < ENTRY_CENTER_PRED_EXIT AND entryElapsed > ENTRY_MIN_TIME {
+        ELSE IF NOT downrangeMode AND navMiss < ENTRY_MISS_EXIT AND dbgPredMiss < ENTRY_CENTER_PRED_EXIT AND entryElapsed > ENTRY_MIN_TIME {
             SET exitReason TO "centered miss:" + ROUND(navMiss,0) + " hs:" + ROUND(navHs,1)
                           + " pAct:" + ROUND(dbgPredMiss,0).
         }
-        ELSE IF SHIP:ALTITUDE - padAlt < ENTRY_ALT_FLOOR {
-            SET exitReason TO "altitude floor miss:" + ROUND(navMiss,0) + " hs:" + ROUND(navHs,1).
+        ELSE IF SHIP:ALTITUDE - padAlt < entryAltFloorNow {
+            SET exitReason TO "altitude floor miss:" + ROUND(navMiss,0) + " hs:" + ROUND(navHs,1) + " pAct:" + ROUND(dbgPredMiss,0).
         }
         ELSE IF SHIP:AVAILABLETHRUST <= 0.01 AND entryElapsed > ENTRY_MIN_TIME {
             SET exitReason TO "fuel out miss:" + ROUND(navMiss,0) + " hs:" + ROUND(navHs,1).
         }
-        ELSE IF entryElapsed > ENTRY_MAX_TIME {
-            SET exitReason TO "RUNAWAY GUARD max-time miss:" + ROUND(navMiss,0) + " hs:" + ROUND(navHs,1).
+        ELSE IF entryElapsed > entryMaxTimeNow {
+            SET exitReason TO "RUNAWAY GUARD max-time miss:" + ROUND(navMiss,0) + " hs:" + ROUND(navHs,1) + " pAct:" + ROUND(dbgPredMiss,0).
         }
 
         IF exitReason <> "" {
@@ -1179,7 +1273,7 @@ UNTIL FALSE {
         // to 1 engine for final descent.
         //
         // Phase structure:
-        //   1. Pre-ignition: remain in 3-engine mode from startup (AG2), fall
+        //   1. Pre-ignition: configure 3-engine mode (AG3), fall
         //      engines-first, compute stopping distance live. Ignite
         //      when stop_dist + margin >= clearance.
         //   2. Ignited (3 engines): throttle controls vertical decel,
@@ -1272,7 +1366,10 @@ UNTIL FALSE {
             // command. The old order allowed one final high-lean frame at
             // single-digit clearance, which is exactly what kicked the booster
             // sideways in the latest log.
-            IF clr <= LANDING_EXIT_CLR AND vsLand < -0.5 AND vsDown <= LANDING_EXIT_VS {
+            IF clr <= LANDING_EXIT_CLR 
+            AND vsLand < -0.5 
+            AND vsDown <= LANDING_EXIT_VS
+            AND (NOT downrangeMode OR navHs < 3) {
                 LOCAL targetVsSettle IS TOUCH_TARGET_VS.
                 IF clr < TOUCH_LOW_CLR { SET targetVsSettle TO TOUCH_TARGET_VS_LOW. }
                 LOCAL aSettle IS padG + (targetVsSettle - vsLand) * TOUCH_VS_GAIN.
@@ -1332,10 +1429,22 @@ UNTIL FALSE {
                 LOCAL reqAE IS 0.
                 LOCAL captureLanding IS FALSE.
                 LOCAL captureLeanCap IS LANDING_CAPTURE_LEAN_CAP_DEG.
+                LOCAL captureOK IS FALSE.
 
-                IF navMiss <= LANDING_CAPTURE_MISS AND dbgPredMiss <= LANDING_CAPTURE_MISS * 1.75 {
+                IF downrangeMode {
+                    SET captureOK TO navMiss < 900 AND dbgPredMiss < 1600.
+                } ELSE IF navMiss <= LANDING_CAPTURE_MISS AND dbgPredMiss <= LANDING_CAPTURE_MISS * 1.75 {
+                    SET captureOK TO TRUE.
+                }
+
+                IF captureOK {
                     SET captureLanding TO TRUE.
                     SET tgoHoriz TO Clamp(tgoLand, 3, 10).
+                
+
+                // IF navMiss <= LANDING_CAPTURE_MISS AND dbgPredMiss <= LANDING_CAPTURE_MISS * 1.75 {
+                //     SET captureLanding TO TRUE.
+                //     SET tgoHoriz TO Clamp(tgoLand, 3, 10).
 
                     // Precision capture: the v8 log showed LANDING entering at
                     // about 88m miss and then only bleeding that down to about
@@ -1459,6 +1568,15 @@ UNTIL FALSE {
                 IF clr < LANDING_FINAL_LEAN_CLR {
                     SET landingLeanCap TO MIN(landingLeanCap, LANDING_FINAL_LEAN_CAP_DEG).
                 }
+
+                // Downrange terminal case: if we are on target but still carrying
+                // sideways velocity, allow a little more lean to kill horizontal speed.
+                // This is velocity damping only; it should not make the controller chase
+                // position harder near touchdown.
+                IF downrangeMode AND clr < 250 AND clr > 45 AND navHs > 4 {
+                    SET landingLeanCap TO MAX(landingLeanCap, 7).
+                }
+
                 IF aVertReq > 0.1 AND landingLeanCap < 89 {
                     LOCAL aHLeanCap IS aVertReq * TAN(landingLeanCap).
                     IF reqAHmag > aHLeanCap AND reqAHmag > 0.01 {
@@ -1500,9 +1618,9 @@ UNTIL FALSE {
                 // hold the required vertical decel at a reasonable throttle,
                 // drop to one. We estimate 1-engine capability by scaling
                 // the current measured capability down by the engine count
-                // ratio. The current mode is three engines; AG3 switches to one engine.
+                // ratio.
                 IF NOT landingSoloMode AND elapsedLand > 1.0 AND vsDown < LANDING_SOLO_VS_MAX {
-                    LOCAL tmSolo IS tm / 3.   // estimate solo capability from current 3-engine thrust
+                    LOCAL tmSolo IS tm / 3.   // assumes AG3 gave us 3x the solo thrust
                     LOCAL thrSoloProj IS 1.0.
                     IF tmSolo > 0.1 {
                         SET thrSoloProj TO aTotal / tmSolo.
